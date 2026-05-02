@@ -23,6 +23,13 @@ import {
   resolveAgentSelection,
 } from "../src/config.js";
 import type { WeChatAcpConfig } from "../src/config.js";
+import {
+  initTelemetry,
+  trackEvent,
+  trackException,
+  shutdownTelemetry,
+} from "../src/telemetry/index.js";
+import packageJson from "../package.json" with { type: "json" };
 
 function usage(): void {
   const presets = listBuiltInAgents()
@@ -293,6 +300,19 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Initialize telemetry. No-op when WECHAT_ACP_TELEMETRY=0/false/off.
+  initTelemetry({
+    version: packageJson.version,
+    storageDir: config.storage.dir,
+    agentPreset: config.agent.preset ?? "raw",
+    daemon: config.daemon.enabled,
+  });
+  trackEvent("app.start", {
+    agentPreset: config.agent.preset ?? "raw",
+    daemon: config.daemon.enabled,
+  });
+  const startedAt = Date.now();
+
   // Create and start bridge
   const bridge = new WeChatAcpBridge(config, (msg) => {
     const ts = new Date().toISOString().substring(11, 19);
@@ -300,12 +320,14 @@ async function main(): Promise<void> {
   });
 
   // Handle graceful shutdown
-  const shutdown = async () => {
+  const shutdown = async (reason: "signal" | "error" | "normal") => {
+    trackEvent("app.stop", { reason, uptimeSec: Math.round((Date.now() - startedAt) / 1000) });
     await bridge.stop();
-    process.exit(0);
+    await shutdownTelemetry();
+    process.exit(reason === "error" ? 1 : 0);
   };
-  process.on("SIGINT", () => void shutdown());
-  process.on("SIGTERM", () => void shutdown());
+  process.on("SIGINT", () => void shutdown("signal"));
+  process.on("SIGTERM", () => void shutdown("signal"));
 
   try {
     await bridge.start({
@@ -316,6 +338,9 @@ async function main(): Promise<void> {
     if ((err as Error).message === "aborted") {
       // Normal shutdown
     } else {
+      trackException(err, "main");
+      trackEvent("app.stop", { reason: "error", uptimeSec: Math.round((Date.now() - startedAt) / 1000) });
+      await shutdownTelemetry();
       console.error(`Fatal: ${String(err)}`);
       process.exit(1);
     }

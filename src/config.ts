@@ -26,7 +26,7 @@ export const BUILT_IN_AGENTS: Record<string, AgentPreset> = {
   copilot: {
     label: "GitHub Copilot",
     command: "npx",
-    args: ["@github/copilot", "--acp", "--yolo"],
+    args: ["@github/copilot", "--acp", "--yolo", "--enable-all-github-mcp-tools"],
     description: "GitHub Copilot",
   },
   claude: {

@@ -60,6 +60,13 @@ Options:
                       scoped to ~/.wechat-acp/instances/<name>/.
                       Lets you run multiple bridges side by side, each with
                       its own WeChat account and project cwd.
+  --inbox-dir <path>  Directory to save binary files received from WeChat
+                      (default: <storage.dir>/inbox). The agent sees the
+                      saved absolute path in the prompt so it can read the
+                      file directly.
+  --no-inbox          Disable saving received files. The agent will only
+                      see a "[Received file: name, N bytes]" notice and
+                      will not be able to read the file content.
   --idle-timeout <m>  Session idle timeout in minutes (default: 1440)
                       Use 0 to disable idle cleanup
   --max-sessions <n>  Max concurrent user sessions (default: 10)
@@ -77,6 +84,8 @@ function parseArgs(argv: string[]): {
   daemon: boolean;
   configFile?: string;
   instance?: string;
+  inboxDir?: string;
+  disableInbox: boolean;
   idleTimeout?: number;
   maxSessions?: number;
   hideThoughts: boolean;
@@ -86,6 +95,7 @@ function parseArgs(argv: string[]): {
   const result = {
     forceLogin: false,
     daemon: false,
+    disableInbox: false,
     hideThoughts: false,
     verbose: false,
     help: false,
@@ -120,6 +130,12 @@ function parseArgs(argv: string[]): {
         break;
       case "--instance":
         result.instance = args[++i];
+        break;
+      case "--inbox-dir":
+        result.inboxDir = args[++i];
+        break;
+      case "--no-inbox":
+        result.disableInbox = true;
         break;
       case "--idle-timeout":
         result.idleTimeout = parseInt(args[++i], 10);
@@ -258,6 +274,7 @@ async function main(): Promise<void> {
   const config = defaultConfig({ instance: args.instance });
 
   // Load config file if specified
+  let configFileSetInboxDir = false;
   if (args.configFile) {
     const fileConfig = loadConfigFile(args.configFile);
     Object.assign(config.wechat, fileConfig.wechat ?? {});
@@ -265,6 +282,16 @@ async function main(): Promise<void> {
     Object.assign(config.agents, fileConfig.agents ?? {});
     Object.assign(config.session, fileConfig.session ?? {});
     Object.assign(config.daemon, fileConfig.daemon ?? {});
+    // Track whether the user explicitly set inboxDir so we don't
+    // overwrite their choice with a re-derived default below. We check
+    // before Object.assign because checking after can't distinguish
+    // "user wrote inboxDir: null to disable" from "user didn't write it".
+    if (
+      fileConfig.storage &&
+      Object.prototype.hasOwnProperty.call(fileConfig.storage, "inboxDir")
+    ) {
+      configFileSetInboxDir = true;
+    }
     Object.assign(config.storage, fileConfig.storage ?? {});
   }
 
@@ -275,6 +302,28 @@ async function main(): Promise<void> {
     config.storage.dir = defaultStorageDir(args.instance);
     config.daemon.logFile = path.join(config.storage.dir, "wechat-acp.log");
     config.daemon.pidFile = path.join(config.storage.dir, "daemon.pid");
+  }
+
+  // Resolve the final inbox directory. Precedence (highest first):
+  //   1. --no-inbox            (explicit disable)
+  //   2. --inbox-dir <path>    (explicit CLI override)
+  //   3. config.storage.inboxDir explicitly set in the config file
+  //      (relative paths are resolved against cwd)
+  //   4. Default: <storage.dir>/inbox, re-derived from whatever the
+  //      final storage.dir is. This is what keeps a config file that
+  //      only sets storage.dir consistent with the documented
+  //      "default: <storage.dir>/inbox", and also covers the
+  //      --instance case for free.
+  if (args.disableInbox) {
+    config.storage.inboxDir = null;
+  } else if (args.inboxDir) {
+    config.storage.inboxDir = path.resolve(args.inboxDir);
+  } else if (configFileSetInboxDir) {
+    if (config.storage.inboxDir && !path.isAbsolute(config.storage.inboxDir)) {
+      config.storage.inboxDir = path.resolve(config.storage.inboxDir);
+    }
+  } else {
+    config.storage.inboxDir = path.join(config.storage.dir, "inbox");
   }
 
   // Handle subcommands

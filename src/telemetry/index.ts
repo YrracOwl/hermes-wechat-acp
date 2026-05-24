@@ -35,8 +35,16 @@ export type EventName =
 type PropValue = string | number | boolean;
 
 interface AppInsightsClient {
-  trackEvent(t: { name: string; properties?: Record<string, unknown> }): void;
-  trackException(t: { exception: Error; properties?: Record<string, unknown> }): void;
+  trackEvent(t: {
+    name: string;
+    properties?: Record<string, unknown>;
+    tagOverrides?: Record<string, string>;
+  }): void;
+  trackException(t: {
+    exception: Error;
+    properties?: Record<string, unknown>;
+    tagOverrides?: Record<string, string>;
+  }): void;
   flush(opts?: { callback?: (msg: string) => void }): void;
   context: { tags: Record<string, string>; keys: { cloudRole: string; userId: string } };
   commonProperties: Record<string, string>;
@@ -44,7 +52,11 @@ interface AppInsightsClient {
 
 let client: AppInsightsClient | null = null;
 let installId = "";
+let appVersion = "";
 let disabled = false;
+// v3 of the SDK ignores `client.commonProperties`, so we merge these into each
+// event's `properties` ourselves.
+let baseProperties: Record<string, string> = {};
 
 function isDisabledByEnv(): boolean {
   const v = (process.env.WECHAT_ACP_TELEMETRY ?? "").trim().toLowerCase();
@@ -85,6 +97,7 @@ export function initTelemetry(opts: {
 
   try {
     installId = loadOrCreateInstallId(opts.storageDir);
+    appVersion = opts.version;
 
     // Lazy-load the SDK so disabled installs don't pay any cost.
     // Cast through `unknown` so the type stays opaque even if the package
@@ -115,9 +128,11 @@ export function initTelemetry(opts: {
       .start();
 
     const c = appInsights.defaultClient as unknown as AppInsightsClient;
+    // `cloudRole` is the one legacy tag the v3 SDK still propagates (via OTel
+    // resource attributes). `ai.user.id` / `ai.session.id` are NOT — we set
+    // those per-event with `tagOverrides` below.
     c.context.tags[c.context.keys.cloudRole] = "wechat-acp";
-    c.context.tags[c.context.keys.userId] = installId;
-    c.commonProperties = {
+    baseProperties = {
       version: opts.version,
       node: process.version,
       os: process.platform,
@@ -126,6 +141,8 @@ export function initTelemetry(opts: {
       ...(opts.agentPreset ? { agentPreset: opts.agentPreset } : {}),
       ...(opts.daemon !== undefined ? { daemon: String(opts.daemon) } : {}),
     };
+    // Best-effort: also set commonProperties for SDK versions that honor it.
+    c.commonProperties = { ...baseProperties };
     client = c;
   } catch {
     // Telemetry must never break the app.
@@ -134,26 +151,52 @@ export function initTelemetry(opts: {
   }
 }
 
-export function trackEvent(name: EventName, props?: Record<string, PropValue>): void {
+/**
+ * Build the tagOverrides that pin `user_Id` and `session_Id` on the App
+ * Insights envelope. v3 of the SDK does not honor `context.tags` for these
+ * fields, so we set them per-event.
+ */
+function buildTagOverrides(sessionId?: string): Record<string, string> {
+  return {
+    "ai.user.id": installId,
+    // Fall back to installId so app-lifecycle events (no per-user context) still
+    // have a stable, non-null session id rather than collapsing into one global
+    // bucket across all installs.
+    "ai.session.id": sessionId && sessionId.length > 0 ? sessionId : installId,
+    // Populates the built-in `application_Version` column so the dashboard's
+    // version filter works without relying on customDimensions.
+    ...(appVersion ? { "ai.application.ver": appVersion } : {}),
+  };
+}
+
+export function trackEvent(
+  name: EventName,
+  props?: Record<string, PropValue>,
+  sessionId?: string,
+): void {
   if (disabled || !client) return;
   try {
-    const properties: Record<string, string> = {};
+    const properties: Record<string, string> = { ...baseProperties };
     if (props) {
       for (const [k, v] of Object.entries(props)) {
         properties[k] = typeof v === "string" ? v : String(v);
       }
     }
-    client.trackEvent({ name, properties });
+    client.trackEvent({ name, properties, tagOverrides: buildTagOverrides(sessionId) });
   } catch {
     // ignore
   }
 }
 
-export function trackException(err: unknown, area: string): void {
+export function trackException(err: unknown, area: string, sessionId?: string): void {
   if (disabled || !client) return;
   try {
     const exception = err instanceof Error ? err : new Error(String(err));
-    client.trackException({ exception, properties: { area } });
+    client.trackException({
+      exception,
+      properties: { ...baseProperties, area },
+      tagOverrides: buildTagOverrides(sessionId),
+    });
   } catch {
     // ignore
   }

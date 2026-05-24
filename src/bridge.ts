@@ -123,15 +123,19 @@ export class WeChatAcpBridge {
 
     this.log(`Message from ${userId}: ${this.previewMessage(msg)}`);
 
-    trackEvent("message.received", {
-      userIdHash: hashUserId(userId),
-      kind: this.messageKind(msg),
-    });
+    trackEvent(
+      "message.received",
+      {
+        userIdHash: hashUserId(userId),
+        kind: this.messageKind(msg),
+      },
+      hashUserId(userId),
+    );
 
     // Convert and enqueue — fire-and-forget (don't block the poll loop)
     this.enqueueMessage(msg, userId, contextToken).catch((err) => {
       this.log(`Failed to enqueue message from ${userId}: ${String(err)}`);
-      trackException(err, "enqueue");
+      trackException(err, "enqueue", hashUserId(userId));
     });
   }
 
@@ -163,14 +167,18 @@ export class WeChatAcpBridge {
           contextToken,
         });
       }
-      trackEvent("reply.sent", {
-        userIdHash: hashUserId(userId),
-        segments: segments.length,
-        chars: formatted.length,
-        durationMs: Date.now() - startedAt,
-      });
+      trackEvent(
+        "reply.sent",
+        {
+          userIdHash: hashUserId(userId),
+          segments: segments.length,
+          chars: formatted.length,
+          durationMs: Date.now() - startedAt,
+        },
+        hashUserId(userId),
+      );
     } catch (err) {
-      trackException(err, "reply");
+      trackException(err, "reply", hashUserId(userId));
       throw err;
     }
 

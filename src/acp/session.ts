@@ -125,11 +125,15 @@ export class SessionManager {
       log: (msg) => this.opts.log(`[${userId}] ${msg}`),
     });
 
-    trackEvent("session.created", {
-      userIdHash: hashUserId(userId),
-      agentPreset: this.opts.agentPreset ?? "raw",
-      activeSessions: this.sessions.size + 1,
-    });
+    trackEvent(
+      "session.created",
+      {
+        userIdHash: hashUserId(userId),
+        agentPreset: this.opts.agentPreset ?? "raw",
+        activeSessions: this.sessions.size + 1,
+      },
+      hashUserId(userId),
+    );
 
     // If agent process exits, clean up the session
     agentInfo.process.on("exit", () => {
@@ -189,14 +193,18 @@ export class SessionManager {
 
           this.opts.log(`[${session.userId}] Agent done (${result.stopReason}), reply ${replyText.length} chars`);
 
-          trackEvent("prompt.completed", {
-            userIdHash: hashUserId(session.userId),
-            agentPreset: this.opts.agentPreset ?? "raw",
-            stopReason: String(result.stopReason),
-            success: true,
-            durationMs: Date.now() - promptStartedAt,
-            replyChars: replyText.length,
-          });
+          trackEvent(
+            "prompt.completed",
+            {
+              userIdHash: hashUserId(session.userId),
+              agentPreset: this.opts.agentPreset ?? "raw",
+              stopReason: String(result.stopReason),
+              success: true,
+              durationMs: Date.now() - promptStartedAt,
+              replyChars: replyText.length,
+            },
+            hashUserId(session.userId),
+          );
 
           // Send reply back to WeChat
           if (replyText.trim()) {
@@ -205,15 +213,19 @@ export class SessionManager {
         } catch (err) {
           this.opts.log(`[${session.userId}] Agent prompt error: ${String(err)}`);
 
-          trackException(err, "prompt");
-          trackEvent("prompt.completed", {
-            userIdHash: hashUserId(session.userId),
-            agentPreset: this.opts.agentPreset ?? "raw",
-            stopReason: "error",
-            success: false,
-            durationMs: Date.now() - promptStartedAt,
-            replyChars: 0,
-          });
+          trackException(err, "prompt", hashUserId(session.userId));
+          trackEvent(
+            "prompt.completed",
+            {
+              userIdHash: hashUserId(session.userId),
+              agentPreset: this.opts.agentPreset ?? "raw",
+              stopReason: "error",
+              success: false,
+              durationMs: Date.now() - promptStartedAt,
+              replyChars: 0,
+            },
+            hashUserId(session.userId),
+          );
 
           // Check if agent died
           if (session.agentInfo.process.killed || session.agentInfo.process.exitCode !== null) {

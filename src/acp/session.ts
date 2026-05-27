@@ -14,6 +14,10 @@ import { trackEvent, trackException, hashUserId } from "../telemetry/index.js";
 export interface PendingMessage {
   prompt: acp.ContentBlock[];
   contextToken: string;
+  completion?: {
+    resolve: () => void;
+    reject: (err: unknown) => void;
+  };
 }
 
 export interface UserSession {
@@ -67,12 +71,17 @@ export class SessionManager {
     // Kill all agent processes
     for (const [userId, session] of this.sessions) {
       this.opts.log(`Stopping session for ${userId}`);
+      this.rejectQueuedCompletions(session, new Error("Session stopped before queued message was processed"));
       killAgent(session.agentInfo.process);
     }
     this.sessions.clear();
   }
 
   async enqueue(userId: string, message: PendingMessage): Promise<void> {
+    if (this.aborted) {
+      throw new Error("Session manager is stopped");
+    }
+
     let session = this.sessions.get(userId);
 
     if (!session) {
@@ -97,6 +106,18 @@ export class SessionManager {
         this.opts.log(`[${userId}] queue processing error: ${String(err)}`);
       });
     }
+  }
+
+  async enqueueAndWait(
+    userId: string,
+    message: Omit<PendingMessage, "completion">,
+  ): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      this.enqueue(userId, {
+        ...message,
+        completion: { resolve, reject },
+      }).catch(reject);
+    });
   }
 
   getSession(userId: string): UserSession | undefined {
@@ -142,6 +163,7 @@ export class SessionManager {
       const s = this.sessions.get(userId);
       if (s && s.agentInfo.process === agentInfo.process) {
         this.opts.log(`Agent process for ${userId} exited, removing session`);
+        this.rejectQueuedCompletions(s, new Error("Agent process exited before queued message was processed"));
         this.sessions.delete(userId);
       }
     });
@@ -162,6 +184,7 @@ export class SessionManager {
     try {
       while (session.queue.length > 0 && !this.aborted) {
         const pending = session.queue.shift()!;
+        let completionError: unknown;
 
         // Keep the ACP client instance stable because the connection is bound to it.
         session.client.updateCallbacks({
@@ -213,6 +236,7 @@ export class SessionManager {
             await this.opts.onReply(session.userId, pending.contextToken, replyText);
           }
         } catch (err) {
+          completionError = err;
           this.opts.log(`[${session.userId}] Agent prompt error: ${String(err)}`);
 
           trackException(err, "prompt", hashUserId(session.userId));
@@ -232,6 +256,7 @@ export class SessionManager {
           // Check if agent died
           if (session.agentInfo.process.killed || session.agentInfo.process.exitCode !== null) {
             this.opts.log(`[${session.userId}] Agent process died, removing session`);
+            this.rejectQueuedCompletions(session, err);
             this.sessions.delete(session.userId);
             return;
           }
@@ -245,6 +270,14 @@ export class SessionManager {
             );
           } catch {
             // best effort
+          }
+        } finally {
+          if (pending.completion) {
+            if (completionError) {
+              pending.completion.reject(completionError);
+            } else {
+              pending.completion.resolve();
+            }
           }
         }
       }
@@ -278,8 +311,17 @@ export class SessionManager {
     if (oldest) {
       this.opts.log(`Evicting oldest idle session: ${oldest.userId}`);
       const session = this.sessions.get(oldest.userId);
-      if (session) killAgent(session.agentInfo.process);
-      this.sessions.delete(oldest.userId);
+      if (session) {
+        this.rejectQueuedCompletions(session, new Error("Session evicted before queued message was processed"));
+        killAgent(session.agentInfo.process);
+        this.sessions.delete(oldest.userId);
+      }
+    }
+  }
+
+  private rejectQueuedCompletions(session: UserSession, err: unknown): void {
+    for (const pending of session.queue.splice(0)) {
+      pending.completion?.reject(err);
     }
   }
 }

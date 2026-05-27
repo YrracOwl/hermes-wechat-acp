@@ -69,6 +69,7 @@ These presets resolve to concrete `command + args` pairs internally, so users do
 ```text
 wechat-acp --agent <preset|command> [options]
 wechat-acp agents
+wechat-acp inject --text <text>
 wechat-acp stop
 wechat-acp status
 ```
@@ -87,6 +88,7 @@ Options:
 - `--no-inbox`: do not save received files; the agent only sees a size notice.
 - `--hide-thoughts`: do not forward agent thinking to WeChat (default: forwarded)
 - `--hide-diffs`: do not forward ACP file diffs to WeChat (default: forwarded)
+- `inject --text <text>`: enqueue a local text message for the running daemon
 - `-V, --version`: print version and exit
 - `-h, --help`: show help
 
@@ -170,6 +172,54 @@ You can also override or add agent presets:
 - Typing indicators are sent when supported by the WeChat API.
 - Sessions are cleaned up after inactivity (set `idleTimeoutMs` to `0` to disable idle cleanup).
 
+## Injecting messages locally
+
+`wechat-acp inject` lets local automation enqueue a text message for the running daemon. The daemon treats it like an incoming direct message from the target user, sends it to the configured ACP agent, and replies through WeChat.
+
+This is useful for cron or launchd jobs, for example a daily AI news prompt:
+
+```bash
+npx wechat-acp inject --instance main --text "今日 AI 资讯"
+```
+
+Targets:
+
+- Default target: `last-active-user`
+- Custom target: `--to <wechat-user-id>`
+
+The daemon learns `last-active-user` from real incoming WeChat messages and stores the latest `userId + contextToken` under the instance storage directory. If no user has messaged the bot yet, ask the target user to send any message once, then retry the injection.
+
+Injected messages are stored as JSON files under:
+
+```text
+~/.wechat-acp/inject/
+~/.wechat-acp/instances/<name>/inject/
+```
+
+The queue is file-based:
+
+```text
+inject/
+├── pending/
+├── processing/
+├── done/
+└── failed/
+```
+
+`inject` only writes to `pending/`; the daemon moves files through the other directories as it processes them. If the daemon is not running, the message remains queued and will be processed after the daemon starts.
+
+For longer prompts, use a file:
+
+```bash
+npx wechat-acp inject --instance main --file ./prompt.txt
+```
+
+Example Linux cron entry:
+
+```cron
+0 7 * * * /usr/local/bin/wechat-acp inject --instance main --text "今日 AI 资讯"
+```
+
 ## Receiving files
 
 When a WeChat user sends a binary file (PDF, image, audio recording exported as a file, ZIP, etc.), `wechat-acp` downloads and decrypts it from the WeChat CDN, then **saves it to disk** so the ACP agent can read it by absolute path. The agent receives a text block like:
@@ -209,6 +259,8 @@ This directory is used for:
 - sync state
 - anonymous telemetry install id (`telemetry-id`, see Telemetry section)
 - `inbox/` — binary files received from WeChat (see "Receiving files"); disable with `--no-inbox` or relocate with `--inbox-dir`
+- `state.json` — last active user and context token for local injection
+- `inject/` — local injected message queue
 
 When `--instance <name>` is used, the same files live under `~/.wechat-acp/instances/<name>/` instead, fully isolated from other instances.
 
@@ -251,16 +303,17 @@ npm run dev
 WECHAT_ACP_TELEMETRY=0 npx wechat-acp --agent copilot
 ```
 
-**What is collected** (9 event types only):
+**What is collected** (10 event types only):
 
 - `app.start` / `app.stop` — process lifecycle, agent preset name, daemon flag, uptime
 - `login.success` / `login.failure` / `token.reused` — WeChat login outcomes (no token, no QR URL)
 - `message.received` — message arrived; only the categorical kind (`text` / `image` / `voice` / `file` / `video` / `empty`) and a hashed user id
+- `message.injected` — local injection queued for processing; only target kind (`last-active-user` / `explicit`) and a hashed user id
 - `session.created` — new ACP session opened
 - `prompt.completed` — ACP turn finished; agent preset, stop reason, duration, reply length
 - `reply.sent` — reply pushed back to WeChat; segment count, total length
 
-Plus exception reports for `monitor`, `prompt`, `reply`, `auth`, `agent_spawn`, and `enqueue` failures.
+Plus exception reports for `monitor`, `prompt`, `reply`, `auth`, `agent_spawn`, `enqueue`, and `state` failures.
 
 **What is never collected**: message bodies, filenames, voice transcripts, image URLs, login tokens, QR codes, raw agent command strings, environment variables, working directory paths, raw WeChat user IDs.
 

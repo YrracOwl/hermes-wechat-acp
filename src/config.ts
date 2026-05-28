@@ -59,6 +59,36 @@ export const BUILT_IN_AGENTS: Record<string, AgentPreset> = {
     args: ["opencode-ai", "acp"],
     description: "OpenCode",
   },
+  openclaw: {
+    label: "OpenClaw",
+    command: "npx",
+    args: ["openclaw", "acp"],
+    description: "OpenClaw",
+  },
+  kiro: {
+    label: "Kiro CLI",
+    command: "kiro-cli",
+    args: ["acp"],
+    description: "Kiro CLI",
+  },
+  hermes: {
+    label: "Hermes Agent",
+    command: "hermes",
+    args: ["acp"],
+    description: "Hermes Agent",
+  },
+  kimi: {
+    label: "Kimi CLI",
+    command: "kimi",
+    args: ["acp"],
+    description: "Kimi CLI (Moonshot AI)",
+  },
+  pi: {
+    label: "pi ACP",
+    command: "npx",
+    args: ["pi-acp"],
+    description: "pi coding agent ACP adapter",
+  },
 };
 
 export interface WeChatAcpConfig {

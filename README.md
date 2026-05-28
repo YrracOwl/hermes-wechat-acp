@@ -61,6 +61,11 @@ Current presets:
 - `qwen`
 - `codex`
 - `opencode`
+- `openclaw`
+- `kiro`
+- `hermes`
+- `kimi`
+- `pi`
 
 These presets resolve to concrete `command + args` pairs internally, so users do not need to type long `npx ...` commands.
 

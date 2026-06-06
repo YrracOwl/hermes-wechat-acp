@@ -13,9 +13,22 @@ import type {
   GetUploadUrlResp,
   SendTypingReq,
   GetConfigResp,
+  NotifyStartResp,
+  NotifyStopResp,
 } from "./types.js";
 
 const CHANNEL_VERSION = "1.0.2";
+const ILINK_APP_ID = "bot";
+
+function buildClientVersion(version: string): number {
+  const parts = version.split(".").map((p) => parseInt(p, 10));
+  const major = parts[0] ?? 0;
+  const minor = parts[1] ?? 0;
+  const patch = parts[2] ?? 0;
+  return ((major & 0xff) << 16) | ((minor & 0xff) << 8) | (patch & 0xff);
+}
+
+const ILINK_APP_CLIENT_VERSION = buildClientVersion(CHANNEL_VERSION);
 
 function randomWechatUin(): string {
   const uint32 = crypto.randomBytes(4).readUInt32BE(0);
@@ -27,6 +40,8 @@ function buildHeaders(token?: string): Record<string, string> {
     "Content-Type": "application/json",
     AuthorizationType: "ilink_bot_token",
     "X-WECHAT-UIN": randomWechatUin(),
+    "iLink-App-Id": ILINK_APP_ID,
+    "iLink-App-ClientVersion": String(ILINK_APP_CLIENT_VERSION),
   };
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
@@ -35,7 +50,7 @@ function buildHeaders(token?: string): Record<string, string> {
 }
 
 function buildBaseInfo(): BaseInfo {
-  return { channel_version: CHANNEL_VERSION };
+  return { channel_version: CHANNEL_VERSION, bot_agent: "wechat-acp" };
 }
 
 async function apiGet<T>(baseUrl: string, path: string, token?: string): Promise<T> {
@@ -71,12 +86,8 @@ async function apiPost<T>(
     const text = await res.text();
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${text}`);
     return JSON.parse(text) as T;
-  } catch (err) {
+  } finally {
     clearTimeout(timer);
-    if ((err as Error).name === "AbortError") {
-      return { ret: 0, msgs: [] } as T;
-    }
-    throw err;
   }
 }
 
@@ -86,13 +97,20 @@ export async function getUpdates(params: {
   get_updates_buf: string;
   timeoutMs?: number;
 }): Promise<GetUpdatesResp> {
-  return apiPost<GetUpdatesResp>(
-    params.baseUrl,
-    "ilink/bot/getupdates",
-    { get_updates_buf: params.get_updates_buf },
-    params.token,
-    params.timeoutMs ?? 38_000,
-  );
+  try {
+    return await apiPost<GetUpdatesResp>(
+      params.baseUrl,
+      "ilink/bot/getupdates",
+      { get_updates_buf: params.get_updates_buf },
+      params.token,
+      params.timeoutMs ?? 38_000,
+    );
+  } catch (err) {
+    if ((err as Error).name === "AbortError") {
+      return { ret: 0, msgs: [], get_updates_buf: params.get_updates_buf };
+    }
+    throw err;
+  }
 }
 
 export async function sendMessage(params: {
@@ -171,5 +189,33 @@ export async function getQrcodeStatus(params: {
   return apiGet(
     params.baseUrl,
     `ilink/bot/get_qrcode_status?qrcode=${encodeURIComponent(params.qrcode)}`,
+  );
+}
+
+/** Notify iLink server that the bot client is starting. */
+export async function notifyStart(params: {
+  baseUrl: string;
+  token?: string;
+}): Promise<NotifyStartResp> {
+  return apiPost<NotifyStartResp>(
+    params.baseUrl,
+    "ilink/bot/msg/notifystart",
+    {},
+    params.token,
+    10_000,
+  );
+}
+
+/** Notify iLink server that the bot client is stopping. */
+export async function notifyStop(params: {
+  baseUrl: string;
+  token?: string;
+}): Promise<NotifyStopResp> {
+  return apiPost<NotifyStopResp>(
+    params.baseUrl,
+    "ilink/bot/msg/notifystop",
+    {},
+    params.token,
+    10_000,
   );
 }

@@ -8,6 +8,7 @@ import type * as acp from "@agentclientprotocol/sdk";
 import type { WeixinMessage, MessageItem } from "../weixin/types.js";
 import { MessageItemType } from "../weixin/types.js";
 import { parseAesKey, downloadAndDecrypt } from "../weixin/media.js";
+import { silkToWav } from "../media/silk.js";
 
 /**
  * Extract text body from a WeChat message's item_list.
@@ -140,8 +141,57 @@ async function convertMediaItem(
   }
 
   if (item.type === MessageItemType.VOICE && item.voice_item?.media) {
-    // If there's a transcription, it was already handled in extractText
-    // Otherwise, note we received voice
+    // If there's a transcription, it was already handled in extractText.
+    // If not, download SILK, try to transcode to WAV, and attach as audio resource.
+    const media = item.voice_item.media;
+    const aesKey = parseAesKey(media);
+    if (!aesKey || !media.encrypt_query_param) {
+      return { type: "text", text: "[Received voice message - no transcription available]" };
+    }
+
+    try {
+      log("Downloading voice (SILK) from CDN...");
+      const silkBuffer = await downloadAndDecrypt(media.encrypt_query_param, aesKey, cdnBaseUrl);
+
+      // Try SILK→WAV transcoding
+      const wavBuffer = await silkToWav(silkBuffer);
+      if (wavBuffer) {
+        log(`Voice transcoded: ${silkBuffer.length}B SILK → ${wavBuffer.length}B WAV`);
+        // Save WAV to inbox so Hermes can read it
+        if (inboxDir) {
+          const savedPath = await saveToInbox(wavBuffer, "voice.wav", inboxDir);
+          return {
+            type: "resource",
+            resource: {
+              uri: `file:///${savedPath}`,
+              mimeType: "audio/wav",
+              text: `[Voice message saved to: ${savedPath}]`,
+            },
+          } as acp.ContentBlock;
+        }
+        // No inbox — attach as base64 resource (ACP resource with base64 data)
+        return {
+          type: "resource",
+          resource: {
+            uri: "file:///voice.wav",
+            mimeType: "audio/wav",
+            text: `[Voice message, WAV ${wavBuffer.length} bytes — use read_file to access]`,
+          },
+        } as acp.ContentBlock;
+      }
+
+      // SILK → WAV failed — save raw SILK to inbox
+      if (inboxDir) {
+        const savedPath = await saveToInbox(silkBuffer, "voice.silk", inboxDir);
+        return {
+          type: "text",
+          text: `[Received voice message (SILK, ${silkBuffer.length}B) saved to: ${savedPath} — WAV transcoding unavailable]`,
+        };
+      }
+    } catch (err) {
+      log(`Voice download/transcode failed: ${String(err)}`);
+    }
+
     return { type: "text", text: "[Received voice message - no transcription available]" };
   }
 

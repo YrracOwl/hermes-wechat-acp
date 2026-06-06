@@ -34,7 +34,9 @@ export function parseAesKey(media: CDNMedia): Buffer | null {
       return Buffer.from(hexStr, "hex");
     }
   }
-  return decoded.subarray(0, 16);
+  throw new Error(
+    `parseAesKey: aes_key must decode to 16 raw bytes or 32-char hex string, got ${decoded.length} bytes`
+  );
 }
 
 export async function downloadAndDecrypt(

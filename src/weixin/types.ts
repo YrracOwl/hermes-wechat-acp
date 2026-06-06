@@ -5,6 +5,8 @@
 
 export interface BaseInfo {
   channel_version?: string;
+  /** Self-declared bot identity, analogous to HTTP User-Agent. Defaults to "wechat-acp". */
+  bot_agent?: string;
 }
 
 export const UploadMediaType = {
@@ -48,6 +50,8 @@ export interface CDNMedia {
   encrypt_query_param?: string;
   aes_key?: string;
   encrypt_type?: number;
+  /** Full download URL returned by server — takes precedence over encrypt_query_param. */
+  full_url?: string;
 }
 
 export interface ImageItem {
@@ -123,6 +127,8 @@ export interface WeixinMessage {
   message_state?: number;
   item_list?: MessageItem[];
   context_token?: string;
+  /** AI inference correlation ID — for tracing message to specific LLM invocation. */
+  run_id?: string;
 }
 
 export interface GetUpdatesResp {
@@ -155,6 +161,8 @@ export interface GetUploadUrlReq {
 export interface GetUploadUrlResp {
   upload_param?: string;
   thumb_upload_param?: string;
+  /** Full upload URL returned by server — takes precedence over upload_param when present. */
+  upload_full_url?: string;
 }
 
 export interface SendTypingReq {
@@ -165,4 +173,26 @@ export interface SendTypingReq {
 
 export interface GetConfigResp {
   typing_ticket?: string;
+}
+
+/** proto: NotifyStartReq — notify server when the channel client is starting. */
+export interface NotifyStartReq {
+  base_info?: BaseInfo;
+}
+
+/** proto: NotifyStartResp */
+export interface NotifyStartResp {
+  ret?: number;
+  errmsg?: string;
+}
+
+/** proto: NotifyStopReq — notify server when the channel client is stopping. */
+export interface NotifyStopReq {
+  base_info?: BaseInfo;
+}
+
+/** proto: NotifyStopResp */
+export interface NotifyStopResp {
+  ret?: number;
+  errmsg?: string;
 }

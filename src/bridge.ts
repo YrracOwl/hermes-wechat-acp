@@ -9,10 +9,13 @@ import type * as acp from "@agentclientprotocol/sdk";
 import crypto from "node:crypto";
 import { login, loadToken, type TokenData } from "./weixin/auth.js";
 import { startMonitor } from "./weixin/monitor.js";
-import { sendTextMessage, splitText } from "./weixin/send.js";
+import { sendTextMessage, splitText, sendImageMessage, sendVideoMessage, sendFileMessage } from "./weixin/send.js";
 import { sendTyping, getConfig } from "./weixin/api.js";
 import { TypingStatus, MessageType } from "./weixin/types.js";
 import type { WeixinMessage } from "./weixin/types.js";
+import { uploadImageToWeixin, uploadVideoToWeixin, uploadFileAttachmentToWeixin } from "./weixin/upload.js";
+import type { WeixinApiOptions } from "./weixin/upload.js";
+import { getMimeFromFilename } from "./weixin/mime.js";
 import { SessionManager } from "./acp/session.js";
 import { weixinMessageToPrompt } from "./adapter/inbound.js";
 import type { WeChatAcpConfig } from "./config.js";
@@ -829,6 +832,56 @@ export class WeChatAcpBridge {
   private aliasHint(canonical: string): string {
     const aliases = resolveCommandAliases(canonical, this.config.commandAliases);
     return aliases.length > 0 ? ` (aliases: ${aliases.join(", ")})` : "";
+  }
+
+  /**
+   * Send a local media file (image/video/document) to a WeChat user.
+   * Routes by MIME type: video/* → uploadVideo + sendVideo, image/* → uploadImage + sendImage,
+   * else → uploadFileAttachment + sendFile.
+   */
+  async sendMediaFile(params: {
+    filePath: string;
+    toUserId: string;
+    contextToken: string;
+    text?: string;
+  }): Promise<{ messageId: string }> {
+    const { filePath, toUserId, contextToken, text } = params;
+    const mime = getMimeFromFilename(filePath);
+    const apiOpts: WeixinApiOptions = {
+      baseUrl: this.tokenData!.baseUrl,
+      token: this.tokenData!.token,
+    };
+    const cdnBaseUrl = this.config.wechat.cdnBaseUrl;
+
+    if (mime.startsWith("video/")) {
+      this.log(`[media] uploading video: ${filePath}`);
+      const uploaded = await uploadVideoToWeixin({
+        filePath, toUserId, opts: apiOpts, cdnBaseUrl, log: this.log,
+      });
+      return sendVideoMessage(
+        { to: toUserId, text: text ?? "", uploaded, opts: { ...apiOpts, contextToken } },
+      );
+    }
+
+    if (mime.startsWith("image/")) {
+      this.log(`[media] uploading image: ${filePath}`);
+      const uploaded = await uploadImageToWeixin({
+        filePath, toUserId, opts: apiOpts, cdnBaseUrl, log: this.log,
+      });
+      return sendImageMessage(
+        { to: toUserId, text: text ?? "", uploaded, opts: { ...apiOpts, contextToken } },
+      );
+    }
+
+    // File attachment
+    const fileName = filePath.split("/").pop() ?? "file";
+    this.log(`[media] uploading file: ${filePath} name=${fileName}`);
+    const uploaded = await uploadFileAttachmentToWeixin({
+      filePath, toUserId, opts: apiOpts, cdnBaseUrl, log: this.log,
+    });
+    return sendFileMessage(
+      { to: toUserId, text: text ?? "", fileName, uploaded, opts: { ...apiOpts, contextToken } },
+    );
   }
 
   private formatAcpConfigList(userId: string): string {

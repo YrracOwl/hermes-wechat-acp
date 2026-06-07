@@ -1,450 +1,368 @@
-# WeChat ACP
+# Hermes WeChat ACP
 
-[![NPM Downloads](https://img.shields.io/npm/d18m/wechat-acp)](https://www.npmjs.com/package/wechat-acp)
+> WeChat message bridge for [Hermes Agent](https://github.com/nousresearch/hermes-agent) with full media support, interactive approval, and openclaw-weixin protocol alignment.
 
-Bridge WeChat direct messages to any ACP-compatible AI agent.
+Fork of [wechat-acp v0.8.0](https://github.com/formulahendry/wechat-acp) maintained for the Hermes ecosystem. Connects WeChat 1:1 messages to Hermes (or any ACP agent) over stdio, with patches for media upload/download, voice transcription, and dangerous-command approval.
 
-`wechat-acp` logs in with the WeChat iLink bot API, polls incoming 1:1 messages, forwards them to an ACP agent over stdio, and sends the agent reply back to WeChat.
+## What's Different From Upstream
 
-<img src="./resources/screenshot.jpg" alt="wechat-acp screenshot" width="400" />
-
-## Features
-
-- WeChat QR login with terminal QR rendering
-- One ACP agent session per WeChat user
-- Built-in ACP agent presets for common CLIs
-- Custom raw agent command support
-- Auto-allow permission requests from the agent
-- Direct message only; group chats are ignored
-- Background daemon mode
-
-## Requirements
-
-- Node.js 20+
-- A WeChat environment that can use the iLink bot API
-- An ACP-compatible agent available locally or through `npx`
+| Feature | Upstream v0.8.0 | hermes-wechat-acp |
+|---------|:---:|:---:|
+| Text messaging | ✅ | ✅ |
+| Image/Video/File **send** | ❌ | ✅ (CDN upload + AES encrypt) |
+| Image/Video/File **receive** | Text only | ✅ (CDN decrypt + save) |
+| Voice message **receive** (SILK→WAV) | ❌ | ✅ (silk-wasm transcode) |
+| Interactive permission approval | Auto-approve only | ✅ (user replies to approve/deny) |
+| Edit approval (file mutations) | ❌ | ✅ (diff preview in WeChat) |
+| `errcode=-14` session guard | ❌ | ✅ (pause + retry, matches openclaw) |
+| openclaw-weixin protocol alignment | Partial | ✅ (P0-P2, 6 fixes from v2.4.4) |
+| `aes_key` encoding fix | ❌ (images show "expired") | ✅ |
+| contextToken persistence fix | ❌ (ret=-2 after restart) | Documented + workaround |
+| `--permission-timeout` / `--permission-timeout-action` | ❌ | ✅ |
+| `--hide-thoughts` (agent thinking filter) | ✅ | ✅ (documented as required) |
+| `--daemon` via `npx tsx` | Broken | ✅ (auto-detect + compile) |
 
 ## Quick Start
 
-Start with a built-in agent preset:
+### Prerequisites
+
+- **Node.js 20+**
+- **Hermes Agent** installed (`hermes acp --check` must pass)
+- A WeChat account that can use the iLink bot API
+- Server can reach `https://ilinkai.weixin.qq.com` and `https://novac2c.cdn.weixin.qq.com`
+
+### Install & Run
 
 ```bash
-npx -y wechat-acp@latest --agent copilot
+# Clone the fork
+git clone https://github.com/YrracOwl/hermes-wechat-acp.git
+cd hermes-wechat-acp
+
+# Install and build
+npm install
+npm run build
+
+# First run — QR login (scan with WeChat within 2 minutes)
+npx tsx bin/wechat-acp.ts --agent hermes
+
+# Production daemon (recommended)
+npx tsx bin/wechat-acp.ts \
+  --agent hermes \
+  --daemon \
+  --hide-thoughts \
+  --config ~/.wechat-acp/config.json \
+  --permission-timeout 300
 ```
 
-Or use a raw custom command:
+On first run, the terminal displays a QR code. Scan it with WeChat. The login token is saved to `~/.wechat-acp/token.json` and reused automatically.
+
+### Using via npm (remote install)
 
 ```bash
-npx -y wechat-acp@latest --agent "npx my-agent --acp"
+# (once published) npx -y hermes-wechat-acp@latest --agent hermes
 ```
 
-On first run, the bridge will:
+Currently available via local clone + build only.
 
-1. Start WeChat QR login
-2. Render a QR code in the terminal
-3. Save the login token under `~/.wechat-acp`
-4. Begin polling direct messages
+## CLI Reference
 
-## Trying preview builds
-
-Every push to `main` is automatically published to npm under the `next` dist-tag, so you can try unreleased changes without waiting for a tagged release:
-
-```bash
-npx -y wechat-acp@next --agent copilot
+```
+hermes-wechat-acp --agent <preset|command> [options]
+hermes-wechat-acp agents          List built-in presets
+hermes-wechat-acp inject --text <text>   Inject local message
+hermes-wechat-acp stop            Stop running daemon
+hermes-wechat-acp status          Check daemon status
 ```
 
-These versions are tagged `<base>-next.<UTC-timestamp>.<short-sha>` (e.g. `0.7.1-next.202605311530.abc1234`, where `0.7.1` is the next patch above whatever `@latest` is). They are built from `main` after CI passes, but have not been through a release review — expect rough edges. Stable users should keep using `wechat-acp@latest`.
+### Options
 
-## Built-in Agent Presets
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--agent <value>` | (required) | Agent preset (`hermes`, `claude`, `copilot`, ...) or raw command |
+| `--cwd <dir>` | current dir | Working directory for agent subprocess |
+| `--login` | — | Force QR re-login (replace saved token) |
+| `--daemon` | — | Run in background (detached child process) |
+| `--config <file>` | — | JSON config file path |
+| `--instance <name>` | — | Isolated instance (separate storage, token, PID) |
+| `--hide-thoughts` | `false` | Do NOT forward agent thinking to WeChat |
+| `--show-diffs` | `false` | Forward ACP file diffs to WeChat |
+| `--inbox-dir <path>` | `<storage>/inbox` | Where received binaries are saved |
+| `--no-inbox` | — | Don't save received files (size notice only) |
+| `--idle-timeout <min>` | `1440` | Session idle timeout (0 = unlimited) |
+| `--max-sessions <n>` | `10` | Max concurrent user sessions |
+| `--permission-timeout <sec>` | `300` | Seconds before auto-resolving approval |
+| `--permission-timeout-action` | `allow` | Timeout behavior: `allow` or `deny` |
+| `-v, --verbose` | — | Verbose logging |
+| `-V, --version` | — | Print version |
+| `-h, --help` | — | Show help |
 
-List the bundled presets:
+### Subcommands
 
-```bash
-npx wechat-acp agents
-```
-
-Current presets:
-
-- `copilot`
-- `claude`
-- `gemini`
-- `qwen`
-- `codex`
-- `opencode`
-- `openclaw`
-- `kiro`
-- `hermes`
-- `kimi`
-- `pi`
-
-These presets resolve to concrete `command + args` pairs internally, so users do not need to type long `npx ...` commands.
-
-## CLI Usage
-
-```text
-wechat-acp --agent <preset|command> [options]
-wechat-acp agents
-wechat-acp inject --text <text>
-wechat-acp stop
-wechat-acp status
-```
-
-Options:
-
-- `--agent <value>`: built-in preset name or raw agent command
-- `--cwd <dir>`: working directory for the agent process
-- `--login`: force QR re-login and replace the saved token
-- `--daemon`: run in background after startup
-- `--config <file>`: load JSON config file
-- `--instance <name>`: run as a named, isolated instance. See "Running multiple instances" below.
-- `--idle-timeout <minutes>`: session idle timeout, default `1440` (use `0` for unlimited)
-- `--max-sessions <count>`: maximum concurrent user sessions, default `10`
-- `--inbox-dir <dir>`: directory where received binary files are saved (default: `<storage.dir>/inbox`). The agent sees the absolute saved path in the prompt and can read the file directly.
-- `--no-inbox`: do not save received files; the agent only sees a size notice.
-- `--hide-thoughts`: do not forward agent thinking to WeChat (default: forwarded)
-- `--show-diffs`: forward ACP file diffs to WeChat (default: hidden)
-- `inject --text <text>`: enqueue a local text message for the running daemon
-- `-V, --version`: print version and exit
-- `-h, --help`: show help
-
-Examples:
-
-```bash
-npx -y wechat-acp@latest --agent copilot
-npx -y wechat-acp@latest --agent claude --cwd D:\code\project
-npx -y wechat-acp@latest --agent "npx @github/copilot --acp"
-npx -y wechat-acp@latest --agent gemini --daemon
-```
-
-## Running multiple instances
-
-By default everything (saved login token, daemon pid/log, sync state, telemetry id) lives under `~/.wechat-acp/`, which means a single machine can only host one bridge at a time. Pass `--instance <name>` to namespace all of that under `~/.wechat-acp/instances/<name>/` and run several bridges side by side, each with its own WeChat account and project directory.
-
-Typical setup: WeChat account 1 drives project A, WeChat account 2 drives project B.
-
-```bash
-# Terminal 1: scan with WeChat account 1
-npx -y wechat-acp@latest --instance projA --agent copilot --cwd D:\code\repo-a
-
-# Terminal 2: scan with WeChat account 2
-npx -y wechat-acp@latest --instance projB --agent copilot --cwd D:\code\repo-b
-```
-
-The first run of each instance prints its own QR code. Tokens are saved per instance, so subsequent runs reuse them independently.
-
-The `stop` and `status` subcommands also honor `--instance`:
-
-```bash
-npx -y wechat-acp@latest status --instance projA
-npx -y wechat-acp@latest stop   --instance projB
-```
-
-Without `--instance`, paths fall back to `~/.wechat-acp/` exactly as before, so existing installs are unaffected.
+| Command | Description |
+|---------|-------------|
+| `agents` | List built-in agent presets |
+| `inject --text <t>` | Enqueue local message for daemon (file-based queue) |
+| `inject --file <f>` | Same, reading text from file |
+| `inject --to <uid>` | Target specific user (default: last active) |
+| `stop` | Send SIGTERM to daemon, clean up PID file |
+| `status` | Print daemon PID or "Not running" |
 
 ## Configuration File
 
-You can provide a JSON config file with `--config`.
+Create `~/.wechat-acp/config.json` (or any path passed via `--config`):
 
-Example:
-
-```json
+```jsonc
 {
+  // Agent configuration
   "agent": {
-    "preset": "copilot",
-    "cwd": "D:/code/project",
-    "showDiffs": true
+    "preset": "hermes",
+    "cwd": "/home/user/project",
+    "showDiffs": false,
+    "showThoughts": false
   },
+
+  // Permission approval (our extension)
+  "permission": {
+    "timeoutSec": 300,
+    "timeoutAction": "allow"
+  },
+
+  // Session management
   "session": {
     "idleTimeoutMs": 86400000,
     "maxConcurrentUsers": 10
-  }
-}
-```
-
-You can also override or add agent presets:
-
-```json
-{
-  "agent": {
-    "preset": "my-agent"
   },
-  "agents": {
-    "my-agent": {
-      "label": "My Agent",
-      "description": "Internal team agent",
-      "command": "npx",
-      "args": ["my-agent-cli", "--acp"]
-    }
+
+  // Command aliases (strongly recommended)
+  "commandAliases": {
+    "/acp-cancel": ["/中断", "中断", "/终止", "终止", "/中止", "中止", "/stop", "/取消", "取消"],
+    "/acp-prompt-start": ["/分段消息头", "分段消息头"],
+    "/acp-prompt-done": ["/分段消息尾", "分段消息尾"]
   }
 }
 ```
 
-## Customizing bridge command names (aliases)
+Without `--config`, aliases are NOT loaded — the bridge only recognizes canonical `/acp-*` forms.
 
-Bridge slash commands like `/acp-config` and `/acp-cancel` have fixed
-built-in names that may not feel natural to everyone, and can clash with
-slash commands built into the underlying agent. You can map any bridge
-command to one or more custom aliases via the `commandAliases` config map:
+## Interactive Permission Approval
 
+This fork adds interactive dangerous-command approval over WeChat. When Hermes wants to run a dangerous command (or edit a file), the bridge sends a formatted message to WeChat:
+
+```
+🔐 Hermes 需要权限: find -delete: find /tmp -name test -delete
+
+[1] 允许一次
+[2] 总是允许
+[3] 拒绝
+[4] 永不
+
+回复数字选择，300秒后自动允许。
+```
+
+The user replies with a number (`1`/`2`/`3`/`4`) or text (`允许`, `/approve`, `/deny`, `拒绝`, `中止`). The reply is intercepted **before** the message queue to prevent deadlock.
+
+### How it works
+
+1. Hermes detects a dangerous pattern → calls `check_all_command_guards()`
+2. ACP adapter bridges to `conn.request_permission()` via `acp_adapter/permissions.py`
+3. wechat-acp's `requestPermission()` sends the formatted prompt to WeChat
+4. User reply is intercepted by `handleMessage` bypass → resolves the pending permission
+5. Hermes proceeds (or aborts) based on the user's choice
+
+**Hermes-side code is NOT modified.** All approval interfaces are Hermes built-in ACP adapter features (`server.py`, `permissions.py`, `edit_approval.py`). This fork only implements the client side of the ACP `requestPermission` contract.
+
+### Edit approval
+
+File mutations (`write_file`, `patch`) also trigger approval. The bridge shows:
+- File path
+- Change size (old → new character count)
+- Short preview (for content ≤120 chars)
+
+```
+🔐 Hermes 需要权限: Approve edit: /tmp/hello.txt
+
+📄 文件: /tmp/hello.txt
+操作: 创建新文件
+内容: Hello from edit approval test
+
+[1] 允许一次
+[2] 拒绝
+
+回复数字选择，300秒后自动允许。
+```
+
+Edit approval has only 2 options (`allow_once` / `deny`). Default policy is `"ask"` (always prompts); can be changed via ACP session config (`/acp-config set edit_approval_policy accept_edits`).
+
+## Media Support (Patched vs Upstream)
+
+This fork includes media modules ported from `@tencent-weixin/openclaw-weixin` v2.4.4:
+
+| Module | File | Function |
+|--------|------|----------|
+| CDN URL + Upload | `src/weixin/cdn.ts` | AES-128-ECB encrypt, CDN POST, retry (3×) |
+| Upload pipeline | `src/weixin/upload.ts` | getUploadUrl → CDN → UploadedFileInfo |
+| Send (images/video/files) | `src/weixin/send.ts` | sendImageMessage, sendVideoMessage, sendFileMessage |
+| MIME type map | `src/weixin/mime.ts` | 30+ extensions → MIME types |
+| Voice transcode | `src/media/silk.ts` | SILK → WAV via silk-wasm |
+
+**Sending from Hermes:** Use the Python bridge script (Python can't call iLink directly — TLS ClientHello fingerprinting causes `ret=-2` for all Python HTTP libraries):
+
+```bash
+# Text
+python3 /tmp/wechat_send.py text "Hello"
+
+# Image / Video / File (auto-detected by extension)
+python3 /tmp/wechat_send.py file /path/to/photo.jpg --text "caption"
+python3 /tmp/wechat_send.py file /path/to/report.pdf
+```
+
+Supported formats: PNG, JPG, GIF, WebP, BMP, MP4, MOV, WebM, MKV, AVI, PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX, TXT, CSV, ZIP, TAR, GZ.
+
+## Token Lifecycle
+
+Four distinct token/state types in the system — easy to confuse:
+
+| Type | Stored in | Lifetime | Failure mode | Fix |
+|------|-----------|----------|--------------|-----|
+| **Bot Token** | `token.json` | Days–weeks | Unknown | `--login` re-scan QR |
+| **Context Token** | `state.json` | Per daemon restart | `sendmessage` returns `ret=-2` silently | User sends any WeChat message |
+| **Sync Buffer** | `sync-buf.json` | Can stale after restart | Polling hangs, no messages | Clear file: `printf '' > ~/.wechat-acp/sync-buf.json` |
+| **Polling Session** | Server-side | After long daemon downtime | `errcode=-14` (not yet observed) | Auto-recovers after 1h pause |
+
+**Key takeaway:** Message loss after daemon restart is almost always contextToken or sync-buf, NOT bot token expiry. Bot token is long-lived; re-scanning QR is rarely needed.
+
+## Session Guard (errcode -14)
+
+When the iLink API returns `errcode=-14`, the polling loop pauses for 1 hour before retrying with the same token. This matches openclaw-weixin's behavior — `errcode=-14` is a **temporary polling-session state** issue, not permanent credential expiry. After the pause, the same bot token resumes working.
+
+## openclaw-weixin Protocol Alignment (v2.4.4)
+
+31-difference file-by-file audit completed (2026-06-06). 6 core fixes applied:
+
+| Priority | Fix | Description |
+|----------|-----|-------------|
+| P0 | AbortError + `get_updates_buf` | Preserve sync buffer on long-poll timeout (prevents message loss) |
+| P0 | `upload_full_url` / `full_url` | Support full-URL mode if iLink switches |
+| P1 | `parseAesKey` throw | Throw on unknown encoding instead of silent 16-byte slice |
+| P1 | `bot_agent` + lifecycle | `bot_agent: "wechat-acp"` in BaseInfo; `notifyStart`/`notifyStop` endpoints |
+| P1 | `run_id` tracking | Inference trace correlation field on messages |
+| P2 | contextToken warn | `console.warn` instead of `throw` on missing contextToken (graceful degradation) |
+
+17 remaining diffs are Agent-framework features (session guard, config cache, markdown filter, outbound hooks, etc.) that a pure transport bridge should NOT carry.
+
+## Bridge Commands
+
+Built-in commands handled by the bridge (NOT forwarded to agent):
+
+| Command | Action |
+|---------|--------|
+| `/acp-cancel` | Cancel current turn |
+| `/acp-cancel all` | Cancel + drop queued messages |
+| `/acp-config` | List ACP session config options |
+| `/acp-config set <k> <v>` | Change config (model, mode, etc.) |
+| `/acp-prompt-start` | Begin multi-part buffering |
+| `/acp-prompt-done` | Flush buffer → one request |
+
+Custom aliases via `commandAliases` in config (see Configuration File above).
+
+## Inject Queue (Cron / Automation)
+
+Inject messages locally without going through WeChat polling:
+
+```bash
+npx tsx bin/wechat-acp.ts inject --text "今日 AI 资讯"
+npx tsx bin/wechat-acp.ts inject --file ./prompt.txt --to <wechat-user-id>
+```
+
+The daemon treats injected messages as incoming DMs. Queue is file-based under `~/.wechat-acp/inject/` (`pending/` → `processing/` → `done/` or `failed/`).
+
+**Inject JSON format** (for manual queue writing):
 ```json
 {
-  "commandAliases": {
-    "/acp-cancel": ["/cancel", "/取消", "取消"],
-    "/acp-config": ["/config", "/设置"]
-  }
+  "id": "unique_id",
+  "createdAt": "2026-06-07T00:00:00.000Z",
+  "target": "last-active-user",
+  "text": "your message",
+  "source": "cli"
 }
 ```
 
-With this config:
-
-- Sending `/取消` cancels the current turn (same as `/acp-cancel`), and
-  `/取消 all` works like `/acp-cancel all`.
-- Sending `/设置` lists ACP session config (same as `/acp-config`), and
-  `/设置 set <configId> <value>` works like `/acp-config set ...`.
-- The original built-in names always keep working as a fallback.
-
-Two alias styles are supported:
-
-- **Slash aliases** (start with `/`, e.g. `/cancel`) behave like the
-  built-in commands: they match the command token and may be followed by
-  arguments (`/cancel all`). They must not contain whitespace.
-- **Bare-phrase aliases** (no leading `/`, e.g. `取消`) match only when
-  they equal the *entire* message. This is handy for WeChat voice input,
-  where saying `/取消` out loud feels unnatural — a transcribed `取消`
-  triggers the command. Because they require an exact full-message match,
-  they take no arguments.
-
-Notes:
-
-- Keys must be a known bridge command (`/acp-config`, `/acp-cancel`, `/acp-prompt-start`, or `/acp-prompt-done`).
-- An alias may not collide with a built-in command name or be mapped to
-  more than one command. Invalid configs are rejected at startup.
-
-## Runtime Behavior
-
-- Each WeChat user gets a dedicated ACP session and subprocess.
-- Messages are processed serially per user.
-- Replies are formatted for WeChat before sending.
-- Typing indicators are sent when supported by the WeChat API.
-- Sessions are cleaned up after inactivity (set `idleTimeoutMs` to `0` to disable idle cleanup).
-
-## WeChat ACP config command
-
-`wechat-acp` reserves a bridge-level chat command for inspecting and changing ACP session configuration without exposing a UI picker in WeChat:
-
-```text
-/acp-config
-/acp-config set <configId> <value>
-```
-
-Examples:
-
-```text
-/acp-config
-/acp-config set model gpt-5-mini
-/acp-config set mode plan
-/acp-config set reasoning_effort low
-```
-
-Notes:
-
-- The command only works after the WeChat user already has an active ACP session. If not, send a normal message first so the session is created.
-- Available `configId` values come directly from the ACP agent's `configOptions`, so the exact list depends on the configured agent.
-- This command is handled by `wechat-acp` itself and is **not** forwarded to the underlying agent.
-- You can give this command your own aliases via `commandAliases` (see [Customizing bridge command names](#customizing-bridge-command-names-aliases)).
-
-## WeChat ACP cancel command
-
-WeChat does not offer a stop button for an in-flight agent turn, so the bridge exposes a chat command instead:
-
-```text
-/acp-cancel
-/acp-cancel all
-```
-
-Behavior:
-
-- `/acp-cancel` sends `session/cancel` to the agent for the current turn. The in-flight `prompt()` resolves with `stopReason: "cancelled"`, any partial output already streamed is delivered to WeChat with a `[cancelled]` suffix, and the next queued message (if any) is processed as usual.
-- `/acp-cancel all` does the same and also drops every message that was queued behind the current turn. Local injections (`wechat-acp inject`) waiting on those queued messages are rejected.
-- If no turn is in flight, the command replies with a notice and is a no-op.
-- This command is handled by `wechat-acp` itself and is **not** forwarded to the underlying agent.
-- You can give this command your own aliases via `commandAliases` (see [Customizing bridge command names](#customizing-bridge-command-names-aliases)).
-
-## Multi-part message buffering
-
-WeChat does not allow sending images, files, and text in a single message. To work around this, the bridge provides a buffering mode that collects multiple messages and sends them to the agent as one combined request:
-
-```text
-/acp-prompt-start
-/acp-prompt-done
-```
-
-Usage:
-
-1. Send `/acp-prompt-start` to enter buffering mode. The bridge replies with a confirmation.
-2. Send any number of messages (text, images, files) in any order. These are collected locally and **not** forwarded to the agent.
-3. Send `/acp-prompt-done` to flush the buffer. All collected content is combined into a single agent request.
-
-This avoids triggering multiple agent turns (and multiple replies) when a user needs to send mixed content.
-
-- If `/acp-prompt-done` is sent with nothing buffered, the bridge replies with a warning and no agent request is made.
-- If `/acp-prompt-start` is sent while already buffering, the bridge reminds the user and keeps the existing buffer.
-- Buffering is per-user and held in memory. It does not persist across bridge restarts.
-- Buffers expire after 10 minutes of inactivity. A maximum of 50 content blocks can be collected per buffer.
-- This command is handled by `wechat-acp` itself and is **not** forwarded to the underlying agent.
-
-## Injecting messages locally
-
-`wechat-acp inject` lets local automation enqueue a text message for the running daemon. The daemon treats it like an incoming direct message from the target user, sends it to the configured ACP agent, and replies through WeChat.
-
-This is useful for cron or launchd jobs, for example a daily AI news prompt:
-
-```bash
-npx wechat-acp inject --instance main --text "今日 AI 资讯"
-```
-
-Targets:
-
-- Default target: `last-active-user`
-- Custom target: `--to <wechat-user-id>`
-
-The daemon learns `last-active-user` from real incoming WeChat messages and stores the latest `userId + contextToken` under the instance storage directory. If no user has messaged the bot yet, ask the target user to send any message once, then retry the injection.
-
-Injected messages are stored as JSON files under:
-
-```text
-~/.wechat-acp/inject/
-~/.wechat-acp/instances/<name>/inject/
-```
-
-The queue is file-based:
-
-```text
-inject/
-├── pending/
-├── processing/
-├── done/
-└── failed/
-```
-
-`inject` only writes to `pending/`; the daemon moves files through the other directories as it processes them. If the daemon is not running, the message remains queued and will be processed after the daemon starts.
-
-For longer prompts, use a file:
-
-```bash
-npx wechat-acp inject --instance main --file ./prompt.txt
-```
-
-Example Linux cron entry:
-
-```cron
-0 7 * * * /usr/local/bin/wechat-acp inject --instance main --text "今日 AI 资讯"
-```
-
-## Receiving files
-
-When a WeChat user sends a binary file (PDF, image, audio recording exported as a file, ZIP, etc.), `wechat-acp` downloads and decrypts it from the WeChat CDN, then **saves it to disk** so the ACP agent can read it by absolute path. The agent receives a text block like:
+## Storage Layout
 
 ```
-[Received file: 报告.pdf (484067 bytes) — saved to: /Users/me/.wechat-acp/inbox/2026-05-21T09-29-12-492Z-报告.pdf]
+~/.wechat-acp/
+├── token.json              # iLink login credential
+├── daemon.pid              # Running daemon PID
+├── wechat-acp.log          # Runtime log (appends)
+├── state.json              # Last active user + contextToken
+├── sync-buf.json           # iLink polling cursor
+├── config.json             # Bridge configuration
+├── telemetry-id            # Anonymous telemetry salt
+├── inbox/                  # Received binary files from WeChat
+├── inject/                 # Local message injection queue
+│   ├── pending/
+│   ├── processing/
+│   ├── done/
+│   └── failed/
+└── instances/<name>/       # Isolated instance storage
 ```
-
-Any ACP agent that can read local files (Copilot CLI, Claude Code, Codex, …) can then open the saved path with its normal file tools.
-
-Defaults:
-
-- Save location: `<storage.dir>/inbox`, i.e. `~/.wechat-acp/inbox` by default, or `~/.wechat-acp/instances/<name>/inbox` when `--instance` is used.
-- Filename: `<ISO-timestamp>-<original-name>`, with filesystem-unsafe characters in the original name replaced by `_`. Unicode (including Chinese) filenames are preserved.
-- No automatic cleanup. Files live until you delete them; agents may reference them long after the WeChat message arrives. Periodically run e.g. `find ~/.wechat-acp/inbox -mtime +30 -delete` if you want to prune.
-
-Overrides:
-
-- `--inbox-dir /some/path` — write files somewhere else (handy if you want them under iCloud Drive, a project folder, etc.)
-- `--no-inbox` — keep the pre-0.3 behavior where the file buffer is dropped after download and the agent only sees `[Received file: name, N bytes]`.
-
-Text-typed files (`.md`, `.json`, source code, …) and images keep their previous behavior: their content is embedded inline in the prompt as a `resource` / `image` block, no disk write needed.
-
-## Storage
-
-By default, runtime files are stored under:
-
-```text
-~/.wechat-acp
-```
-
-This directory is used for:
-
-- saved login token
-- daemon pid file
-- daemon log file
-- sync state
-- anonymous telemetry install id (`telemetry-id`, see Telemetry section)
-- `inbox/` — binary files received from WeChat (see "Receiving files"); disable with `--no-inbox` or relocate with `--inbox-dir`
-- `state.json` — last active user and context token for local injection
-- `inject/` — local injected message queue
-
-When `--instance <name>` is used, the same files live under `~/.wechat-acp/instances/<name>/` instead, fully isolated from other instances.
-
-## Current Limitations
-
-- Direct messages only; group chats are ignored
-- MCP servers are not used
-- Permission requests are auto-approved
-- Agent communication is subprocess-only over stdio
-- Some preset agents may require separate authentication before they can respond successfully
 
 ## Development
 
-For local development:
-
 ```bash
+# Clone
+git clone https://github.com/YrracOwl/hermes-wechat-acp.git
+cd hermes-wechat-acp
+
+# Install + Build
 npm install
-npm run build
-```
+npm run build          # tsc (required before daemonize)
 
-Run the built CLI locally:
+# Run locally (TypeScript source via tsx)
+npx tsx bin/wechat-acp.ts --agent hermes
 
-```bash
-node dist/bin/wechat-acp.js --help
-```
+# Production daemon
+npx tsx bin/wechat-acp.ts --agent hermes --daemon --hide-thoughts --config ~/.wechat-acp/config.json --permission-timeout 300
 
-Watch mode:
-
-```bash
+# Watch mode (auto-rebuild on changes)
 npm run dev
+
+# Status / Stop
+npx tsx bin/wechat-acp.ts status
+npx tsx bin/wechat-acp.ts stop
 ```
 
-## Telemetry
+**Development workflow:**
+1. Edit `.ts` files in `src/` or `bin/`
+2. `npx tsc --noEmit && npx tsc` (type-check + compile)
+3. `git add -A && git commit`
+4. Restart daemon to pick up compiled JS
 
-`wechat-acp` collects anonymous usage telemetry via Azure Application Insights to help understand which agent presets are used and to detect crashes.
+Always compile before `--daemon` — the daemon spawns child processes from compiled JS at `dist/`.
 
-**To disable telemetry**, set the `WECHAT_ACP_TELEMETRY` environment variable to `0`, `false`, or `off` before running:
+## Version History
 
-```bash
-WECHAT_ACP_TELEMETRY=0 npx wechat-acp --agent copilot
+```
+172d41d chore: remove test scripts with hardcoded local IDs
+c2f77c6 fix: revert misleading session-expired flag
+7bbd292 feat: edit approval with diff display
+cd8b8bf fix: #14 --daemon spawn compiled JS + #15 contextToken
+2214ccc feat: interactive permission approval over WeChat
+c0d0428 fix: P0-P2 openclaw-weixin v2.4.4 alignment
+8889461 v0.8.0 (upstream)
 ```
 
-**What is collected** (15 event types only):
+Base: `formulahendry/wechat-acp` v0.8.0 with 6 local commits adding media support, approval, and protocol alignment.
 
-- `app.start` / `app.stop` — process lifecycle, agent preset name, daemon flag, uptime
-- `login.success` / `login.failure` / `token.reused` — WeChat login outcomes (no token, no QR URL)
-- `message.received` — message arrived; only the categorical kind (`text` / `image` / `voice` / `file` / `video` / `empty`) and a hashed user id
-- `message.injected` — local injection queued for processing; only target kind (`last-active-user` / `explicit`) and a hashed user id
-- `command.acp_config.view` — `/acp-config` invoked to list options; whether a session exists and the option count
-- `command.acp_config.set` — `/acp-config set` succeeded; `configId`, option type (`select` / `boolean`), and the resolved option value (all from the agent's declared `configOptions`, never the user's raw input)
-- `command.acp_cancel` — `/acp-cancel` invoked; whether the queue was drained, whether an in-flight turn was actually cancelled, and how many queued messages were dropped
-- `command.buffer_start` — `/acp-prompt-start` invoked to enter buffering mode
-- `command.buffer_done` — `/acp-prompt-done` invoked to flush buffer; number of content blocks collected
-- `session.created` — new ACP session opened
-- `prompt.completed` — ACP turn finished; agent preset, stop reason, duration, reply length
-- `reply.sent` — reply pushed back to WeChat; segment count, total length
+## TODO / Known Limitations
 
-Plus exception reports for `monitor`, `prompt`, `reply`, `auth`, `agent_spawn`, `enqueue`, `buffer`, `command`, and `state` failures.
-
-**What is never collected**: message bodies, filenames, voice transcripts, image URLs, login tokens, QR codes, raw agent command strings, environment variables, working directory paths, raw WeChat user IDs.
-
-User IDs are sha256-hashed with a per-install salt stored in `~/.wechat-acp/telemetry-id`. The salt is generated on first run and never leaves your machine. Delete the file to rotate it.
+- [ ] Group chat support (not in scope — iLink limitations)
+- [ ] Outbound voice message sending (iLink API does not support bot-initiated voice)
+- [ ] npm package publication
+- [ ] Automated tests for approval + media pipelines
+- [ ] `contextToken` auto-refresh on daemon restart (currently requires user to send a message first)
+- [ ] Python iLink direct calls (all Python HTTP libs return `ret=-2`; workaround: Node.js subprocess)
 
 ## License
 
-MIT
+MIT. Based on [wechat-acp](https://github.com/formulahendry/wechat-acp) by formulahendry. Media modules adapted from [@tencent-weixin/openclaw-weixin](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin).

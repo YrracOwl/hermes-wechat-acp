@@ -88,17 +88,8 @@ export async function startMonitor(opts: MonitorOpts): Promise<void> {
           resp.errcode === SESSION_EXPIRED_ERRCODE || resp.ret === SESSION_EXPIRED_ERRCODE;
 
         if (isSessionExpired) {
-          log(`⚠️  Session expired (errcode ${SESSION_EXPIRED_ERRCODE}), pausing 1 hour...`);
-          log(`    Token saved at ${token ? "stored" : "unknown"} may need renewal.`);
-          log(`    Run 'wechat-acp --login' to re-authenticate.`);
-          // Write flag file so `wechat-acp status` can surface this
-          try {
-            fs.writeFileSync(
-              path.join(storageDir, "session-expired.txt"),
-              new Date().toISOString(),
-              "utf-8",
-            );
-          } catch { /* best-effort */ }
+          log(`⚠️  Polling session expired (errcode ${SESSION_EXPIRED_ERRCODE}), pausing 1 hour...`);
+          log(`    (This is a temporary polling-state issue, not bot credential expiry.)`);
           consecutiveFailures = 0;
           await sleep(60 * 60_000, abortSignal);
           continue;

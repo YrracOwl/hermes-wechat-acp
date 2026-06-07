@@ -83,6 +83,10 @@ export class WeChatAcpBridge {
     timeout: ReturnType<typeof setTimeout>;
     options: acp.PermissionOption[];
   }>();
+  // Per-user last known contextToken (in-memory, synced from handleMessage).
+  // Used by handlePermissionRequest so permission options carry the right
+  // contextToken instead of hardcoding an empty string.
+  private lastContextToken = new Map<string, string>();
   private log: (msg: string) => void;
 
   constructor(config: WeChatAcpConfig, log?: (msg: string) => void) {
@@ -226,10 +230,14 @@ export class WeChatAcpBridge {
       timeout: setTimeout(() => {}, 0), // placeholder; actual timeout is in client.ts
     });
 
-    // Send to WeChat — use sendReply which bypasses processQueue
+    // Send to WeChat — use sendReply which bypasses processQueue.
+    // Use the last known contextToken from the user's message to keep
+    // the conversation context intact. Falls back to empty string if
+    // no message has been received from this user yet.
     const tokenData = this.tokenData;
     if (!tokenData) return;
-    this.sendReply(userId, "", text).catch((err) => {
+    const contextToken = this.lastContextToken.get(userId) ?? "";
+    this.sendReply(userId, contextToken, text).catch((err) => {
       this.log(`Failed to send permission prompt to ${userId}: ${String(err)}`);
     });
   }
@@ -308,6 +316,7 @@ export class WeChatAcpBridge {
 
     this.log(`Message from ${userId}: ${this.previewMessage(msg)}`);
     this.rememberActiveUser(userId, contextToken);
+    this.lastContextToken.set(userId, contextToken);
 
     trackEvent(
       "message.received",

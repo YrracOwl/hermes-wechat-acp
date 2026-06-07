@@ -308,8 +308,21 @@ function daemonize(config: WeChatAcpConfig): void {
   const out = fs.openSync(logFile, "a");
   const err = fs.openSync(logFile, "a");
 
-  // Re-run ourselves with --no-daemon (internal flag) as a detached process
+  // Re-run ourselves with --no-daemon (internal flag) as a detached process.
+  // When running from TypeScript source (via tsx), process.argv[1] is a .ts
+  // file that Node can't run directly. Replace it with the compiled .js so
+  // the child process works with plain `node` — no tsx dependency needed.
+  const isTypeScript = process.argv[1].endsWith(".ts");
   const args = process.argv.slice(1).filter((a) => a !== "--daemon");
+  if (isTypeScript) {
+    args[0] = args[0].replace(/\.ts$/, ".js").replace("bin/", "dist/bin/");
+    if (!fs.existsSync(args[0])) {
+      console.error(
+        `Error: Compiled entry not found at ${args[0]}. Run 'npm run build' first.`,
+      );
+      process.exit(1);
+    }
+  }
   const child = spawn(process.execPath, args, {
     detached: true,
     stdio: ["ignore", out, err],

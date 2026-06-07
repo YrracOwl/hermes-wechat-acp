@@ -31,3 +31,5 @@ Thumbs.db
 # Test scripts (may contain local paths/IDs)
 debug/
 
+package.json.bak
+wyckoff*.md

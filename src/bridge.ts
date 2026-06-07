@@ -200,10 +200,34 @@ export class WeChatAcpBridge {
       reject: () => void;
     },
   ): void {
-    // Build option list
+    // Build message body
     const lines: string[] = [];
-    lines.push(`🔐 Hermes 需要权限: ${params.toolCall.title ?? "tool call"}`);
+    const title = params.toolCall.title ?? "tool call";
+    lines.push(`🔐 Hermes 需要权限: ${title}`);
 
+    // Show diff content for edit approvals
+    const diffContent = this.extractDiffContent(params.toolCall);
+    if (diffContent) {
+      lines.push("");
+      lines.push(`📄 文件: ${diffContent.path}`);
+      if (diffContent.oldText == null) {
+        lines.push("操作: 创建新文件");
+        lines.push(this.truncateText(`内容: ${diffContent.newText}`, 200));
+      } else {
+        const oldLen = diffContent.oldText.length;
+        const newLen = diffContent.newText.length;
+        const delta = newLen - oldLen;
+        const sign = delta >= 0 ? "+" : "";
+        lines.push(`修改: ${oldLen} → ${newLen} 字符 (${sign}${delta})`);
+        // Show a short preview of what changed
+        if (diffContent.newText.length <= 120) {
+          lines.push(`预览: ${diffContent.newText.trim().split("\n")[0].slice(0, 100)}`);
+        }
+      }
+    }
+
+    // Build options
+    lines.push("");
     const indexLabels: Record<number, string> = {};
     let idx = 1;
     for (const opt of params.options) {
@@ -240,6 +264,35 @@ export class WeChatAcpBridge {
     this.sendReply(userId, contextToken, text).catch((err) => {
       this.log(`Failed to send permission prompt to ${userId}: ${String(err)}`);
     });
+  }
+
+  /** Extract diff content from a tool call for edit approval display. */
+  private extractDiffContent(toolCall: acp.ToolCallUpdate): {
+    path: string;
+    oldText: string | null;
+    newText: string;
+  } | null {
+    const content = toolCall.content;
+    if (!content || !Array.isArray(content)) return null;
+    for (const block of content) {
+      // ACP ToolCallContent is a tagged union with a "type" discriminator.
+      // Diff blocks have type "diff" and carry path/oldText/newText fields.
+      const b = block as Record<string, unknown>;
+      if (b.type === "diff" && typeof b.path === "string" && typeof b.newText === "string") {
+        return {
+          path: b.path,
+          oldText: (typeof b.oldText === "string" ? b.oldText : null),
+          newText: b.newText,
+        };
+      }
+    }
+    return null;
+  }
+
+  /** Truncate text to maxLen chars with ellipsis. */
+  private truncateText(text: string, maxLen: number): string {
+    if (text.length <= maxLen) return text;
+    return text.slice(0, maxLen - 3) + "...";
   }
 
   private handleMessage(msg: WeixinMessage): void {

@@ -32,6 +32,9 @@ export function saveToken(storageDir: string, data: TokenData): void {
   fs.mkdirSync(storageDir, { recursive: true });
   const tokenPath = getTokenPath(storageDir);
   fs.writeFileSync(tokenPath, JSON.stringify(data, null, 2), "utf-8");
+  // Clear session-expired flag on successful re-login
+  const expiredFlag = path.join(storageDir, "session-expired.txt");
+  try { if (fs.existsSync(expiredFlag)) fs.unlinkSync(expiredFlag); } catch { /* best-effort */ }
 }
 
 export async function login(params: {

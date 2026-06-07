@@ -283,6 +283,19 @@ function handleStop(config: WeChatAcpConfig): void {
 
 function handleStatus(config: WeChatAcpConfig): void {
   const pidFile = config.daemon.pidFile;
+
+  // Check for session expiration before PID check
+  const expiredFlag = path.join(config.storage.dir, "session-expired.txt");
+  if (fs.existsSync(expiredFlag)) {
+    try {
+      const when = fs.readFileSync(expiredFlag, "utf-8").trim();
+      console.log(`⚠️  Session expired (detected ${when})`);
+      console.log(`   Run 'wechat-acp --login' to re-authenticate.`);
+    } catch {
+      console.log("⚠️  Session expired. Run 'wechat-acp --login' to re-authenticate.");
+    }
+  }
+
   if (!fs.existsSync(pidFile)) {
     console.log("Not running");
     return;

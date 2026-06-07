@@ -127,7 +127,7 @@ export class SessionManager {
       // Edit approval is auto-accepted — the user doesn't need to approve
       // every write_file/patch from WeChat.
       try {
-        await this.setSessionConfigOption(userId, "edit_approval_policy", "accept_edits");
+        await this.setSessionConfigOption(userId, "edit_approval_policy", "workspace_session");
       } catch (err) {
         this.opts.log(`[${userId}] Failed to set default session config: ${String(err)}`);
       }

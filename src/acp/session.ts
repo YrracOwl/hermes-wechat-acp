@@ -122,6 +122,15 @@ export class SessionManager {
 
       session = await this.createSession(userId, message.contextToken);
       this.sessions.set(userId, session);
+
+      // Auto-configure session defaults for new sessions.
+      // Edit approval is auto-accepted — the user doesn't need to approve
+      // every write_file/patch from WeChat.
+      try {
+        await this.setSessionConfigOption(userId, "edit_approval_policy", "accept_edits");
+      } catch (err) {
+        this.opts.log(`[${userId}] Failed to set default session config: ${String(err)}`);
+      }
     }
 
     // Always update contextToken to the latest

@@ -132,6 +132,12 @@ export interface WeChatAcpConfig {
     idleTimeoutMs: number;
     maxConcurrentUsers: number;
   };
+  permission: {
+    /** Seconds to wait for user approval before timeout action. Default 300 (5 min). */
+    timeoutSec: number;
+    /** Action on timeout: "allow" or "deny". Default "allow". */
+    timeoutAction: "allow" | "deny";
+  };
   daemon: {
     enabled: boolean;
     logFile: string;
@@ -194,6 +200,7 @@ export function defaultConfig(opts?: { instance?: string }): WeChatAcpConfig {
       command: "",
       args: [],
       cwd: process.cwd(),
+      env: { HERMES_INTERACTIVE: "1" },
       showThoughts: true,
       showDiffs: false,
     },
@@ -201,6 +208,10 @@ export function defaultConfig(opts?: { instance?: string }): WeChatAcpConfig {
     session: {
       idleTimeoutMs: 1440 * 60_000, // 24 hours
       maxConcurrentUsers: 10,
+    },
+    permission: {
+      timeoutSec: 300,
+      timeoutAction: "allow",
     },
     daemon: {
       enabled: false,

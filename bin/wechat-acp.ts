@@ -136,6 +136,8 @@ function parseArgs(argv: string[]): {
   injectContextToken?: string;
   hideThoughts: boolean;
   showDiffs: boolean;
+  permissionTimeout?: number;
+  permissionTimeoutAction?: string;
   verbose: boolean;
   version: boolean;
   help: boolean;
@@ -210,6 +212,12 @@ function parseArgs(argv: string[]): {
         break;
       case "--show-diffs":
         result.showDiffs = true;
+        break;
+      case "--permission-timeout":
+        result.permissionTimeout = parseInt(args[++i], 10);
+        break;
+      case "--permission-timeout-action":
+        result.permissionTimeoutAction = args[++i];
         break;
       case "-v":
       case "--verbose":
@@ -491,6 +499,8 @@ async function main(): Promise<void> {
   if (args.maxSessions) config.session.maxConcurrentUsers = args.maxSessions;
   if (args.hideThoughts) config.agent.showThoughts = false;
   if (args.showDiffs) config.agent.showDiffs = true;
+  if (args.permissionTimeout !== undefined && Number.isFinite(args.permissionTimeout) && args.permissionTimeout > 0) config.permission.timeoutSec = args.permissionTimeout;
+  if (args.permissionTimeoutAction === "allow" || args.permissionTimeoutAction === "deny") config.permission.timeoutAction = args.permissionTimeoutAction;
   config.daemon.enabled = args.daemon;
 
   // Handle daemon mode

@@ -75,6 +75,14 @@ export class WeChatAcpBridge {
   // messages arriving during the flush wait for the buffered prompt to
   // enqueue first, preserving turn order.
   private bufferFlushing = new Map<string, Promise<void>>();
+  // Per-user pending permission request — resolve/reject callbacks keyed by userId.
+  // Only one permission request can be pending per user at a time.
+  private pendingPermissions = new Map<string, {
+    resolve: (optionId: string) => void;
+    reject: () => void;
+    timeout: ReturnType<typeof setTimeout>;
+    options: acp.PermissionOption[];
+  }>();
   private log: (msg: string) => void;
 
   constructor(config: WeChatAcpConfig, log?: (msg: string) => void) {
@@ -138,6 +146,9 @@ export class WeChatAcpBridge {
       log: this.log,
       onReply: (userId, contextToken, text) => this.sendReply(userId, contextToken, text),
       sendTyping: (userId, contextToken) => this.sendTypingIndicator(userId, contextToken),
+      onPermissionRequest: (userId, params) => this.handlePermissionRequest(userId, params),
+      permissionTimeoutSec: this.config.permission.timeoutSec,
+      permissionTimeoutAction: this.config.permission.timeoutAction,
     });
     this.sessionManager.start();
 
@@ -175,6 +186,54 @@ export class WeChatAcpBridge {
     this.log("Bridge stopped");
   }
 
+  /** Format and send a permission request to the WeChat user, register callbacks. */
+  private handlePermissionRequest(
+    userId: string,
+    params: {
+      options: acp.PermissionOption[];
+      toolCall: acp.ToolCallUpdate;
+      resolve: (optionId: string) => void;
+      reject: () => void;
+    },
+  ): void {
+    // Build option list
+    const lines: string[] = [];
+    lines.push(`🔐 Hermes 需要权限: ${params.toolCall.title ?? "tool call"}`);
+
+    const indexLabels: Record<number, string> = {};
+    let idx = 1;
+    for (const opt of params.options) {
+      const kindLabel =
+        opt.kind === "allow_once" ? "允许一次" :
+        opt.kind === "allow_always" ? "总是允许" :
+        opt.kind === "reject_once" ? "拒绝" :
+        opt.kind === "reject_always" ? "永不" : opt.kind;
+      lines.push(`[${idx}] ${kindLabel}`);
+      indexLabels[idx] = opt.optionId;
+      idx++;
+    }
+
+    lines.push("");
+    lines.push(`回复数字选择，${this.config.permission.timeoutSec}秒后自动${this.config.permission.timeoutAction === "deny" ? "拒绝" : "允许"}。`);
+
+    const text = lines.join("\n");
+
+    // Store pending
+    this.pendingPermissions.set(userId, {
+      resolve: params.resolve,
+      reject: params.reject,
+      options: params.options,
+      timeout: setTimeout(() => {}, 0), // placeholder; actual timeout is in client.ts
+    });
+
+    // Send to WeChat — use sendReply which bypasses processQueue
+    const tokenData = this.tokenData;
+    if (!tokenData) return;
+    this.sendReply(userId, "", text).catch((err) => {
+      this.log(`Failed to send permission prompt to ${userId}: ${String(err)}`);
+    });
+  }
+
   private handleMessage(msg: WeixinMessage): void {
     // Only process user messages (not bot's own messages)
     if (msg.message_type !== MessageType.USER) return;
@@ -185,6 +244,67 @@ export class WeChatAcpBridge {
     const userId = msg.from_user_id;
     const contextToken = msg.context_token;
     if (!userId || !contextToken) return;
+
+    // ⚡ Permission reply intercept — MUST run before any command/message routing.
+    // The agent is blocked in requestPermission() waiting for this reply.
+    // Bypassing processQueue prevents deadlock (same pattern as Hermes gateway base.py:1582).
+    const pending = this.pendingPermissions.get(userId);
+    if (pending) {
+      const replyText = this.extractTextFromMessage(msg);
+      if (replyText) {
+        const trimmed = replyText.trim();
+        // Try numeric index match
+        const num = parseInt(trimmed, 10);
+        if (num >= 1 && num <= pending.options.length) {
+          const optionId = pending.options[num - 1].optionId;
+          this.log(`[${userId}] permission resolved by index: ${num} → ${optionId}`);
+          this.pendingPermissions.delete(userId);
+          pending.resolve(optionId);
+          return;
+        }
+        // Try text match: /approve, allow, 允许, /deny, 拒绝, /acp-cancel, 中止
+        const lower = trimmed.toLowerCase();
+        const isCancel = lower === "/acp-cancel" || lower === "中止" || lower === "/中止";
+        if (isCancel) {
+          this.log(`[${userId}] permission cancelled by command`);
+          this.pendingPermissions.delete(userId);
+          pending.reject();
+          return;
+        }
+        if (lower === "/approve" || lower === "允许" || lower === "approve" || lower === "yes") {
+          // Find first allow option
+          const allowOpt = pending.options.find(o => o.kind === "allow_once" || o.kind === "allow_always");
+          if (allowOpt) {
+            this.log(`[${userId}] permission resolved by text: "${trimmed}" → ${allowOpt.optionId}`);
+            this.pendingPermissions.delete(userId);
+            pending.resolve(allowOpt.optionId);
+            return;
+          }
+        }
+        if (lower === "/approve-always" || lower === "总是允许" || lower === "always") {
+          const opt = pending.options.find(o => o.kind === "allow_always");
+          if (opt) {
+            this.log(`[${userId}] permission resolved by text: "${trimmed}" → ${opt.optionId}`);
+            this.pendingPermissions.delete(userId);
+            pending.resolve(opt.optionId);
+            return;
+          }
+        }
+        if (lower === "/deny" || lower === "拒绝" || lower === "deny" || lower === "no") {
+          this.log(`[${userId}] permission denied by text: "${trimmed}"`);
+          this.pendingPermissions.delete(userId);
+          pending.reject();
+          return;
+        }
+      }
+      // Message didn't match — ignore it (don't enqueue, don't confuse agent)
+      // Send a hint back
+      const tokenData = this.tokenData;
+      if (tokenData) {
+        this.sendReply(userId, contextToken, "请回复数字选择，或 /approve /deny").catch(() => {});
+      }
+      return;
+    }
 
     this.log(`Message from ${userId}: ${this.previewMessage(msg)}`);
     this.rememberActiveUser(userId, contextToken);
@@ -777,6 +897,16 @@ export class WeChatAcpBridge {
       if (item.type === 5) return "[video]";
     }
     return "[empty]";
+  }
+
+  /** Extract the first text item from a WeChat message, or null. */
+  private extractTextFromMessage(msg: WeixinMessage): string | null {
+    for (const item of msg.item_list ?? []) {
+      if (item.type === 1 && item.text_item?.text) {
+        return item.text_item.text;
+      }
+    }
+    return null;
   }
 
   private messageKind(msg: WeixinMessage): string {

@@ -14,9 +14,20 @@ export interface WeChatAcpClientOpts {
   onThoughtFlush: (text: string) => Promise<void>;
   onMessageFlush: (text: string) => Promise<void>;
   onConfigOptionsUpdate?: (configOptions: acp.SessionConfigOption[]) => void;
+  /** Called when the agent requests permission. Bridge should present options to user, wait for reply, and call resolve/reject. */
+  onPermissionRequest?: (params: {
+    options: acp.PermissionOption[];
+    toolCall: acp.ToolCallUpdate;
+    resolve: (optionId: string) => void;
+    reject: () => void;
+  }) => void;
   log: (msg: string) => void;
   showThoughts: boolean;
   showDiffs?: boolean;
+  /** Seconds to wait for user reply before timeout. Default 300. */
+  permissionTimeoutSec?: number;
+  /** Action on timeout: "allow" or "deny". Default "allow". */
+  permissionTimeoutAction?: "allow" | "deny";
 }
 
 export class WeChatAcpClient implements acp.Client {
@@ -62,20 +73,63 @@ export class WeChatAcpClient implements acp.Client {
   async requestPermission(
     params: acp.RequestPermissionRequest,
   ): Promise<acp.RequestPermissionResponse> {
-    // Auto-allow: find first "allow" option
-    const allowOpt = params.options.find(
-      (o) => o.kind === "allow_once" || o.kind === "allow_always",
-    );
-    const optionId = allowOpt?.optionId ?? params.options[0]?.optionId ?? "allow";
+    if (!this.opts.onPermissionRequest) {
+      // No callback configured — auto-allow (backward compatible)
+      const allowOpt = params.options.find(
+        (o) => o.kind === "allow_once" || o.kind === "allow_always",
+      );
+      const optionId = allowOpt?.optionId ?? params.options[0]?.optionId ?? "allow";
+      this.opts.log(`[permission] auto-allowed (no callback): ${params.toolCall?.title ?? "unknown"} → ${optionId}`);
+      return { outcome: { outcome: "selected", optionId } };
+    }
 
-    this.opts.log(`[permission] auto-allowed: ${params.toolCall?.title ?? "unknown"} → ${optionId}`);
+    const timeoutSec = this.opts.permissionTimeoutSec ?? 300;
+    const timeoutAction = this.opts.permissionTimeoutAction ?? "allow";
+    const callback = this.opts.onPermissionRequest; // capture for TypeScript narrowing
 
-    return {
-      outcome: {
-        outcome: "selected",
-        optionId,
-      },
-    };
+    return new Promise<acp.RequestPermissionResponse>((resolvePromise) => {
+      let resolved = false;
+
+      const cleanup = () => {
+        resolved = true;
+        clearTimeout(timer);
+      };
+
+      const timer = setTimeout(() => {
+        if (resolved) return;
+        resolved = true;
+
+        if (timeoutAction === "deny") {
+          this.opts.log(`[permission] timed out after ${timeoutSec}s → denied: ${params.toolCall?.title ?? "unknown"}`);
+          resolvePromise({ outcome: { outcome: "cancelled" } });
+        } else {
+          // Default: auto-allow on timeout
+          const allowOpt = params.options.find(
+            (o) => o.kind === "allow_once" || o.kind === "allow_always",
+          );
+          const optionId = allowOpt?.optionId ?? params.options[0]?.optionId ?? "allow_once";
+          this.opts.log(`[permission] timed out after ${timeoutSec}s → auto-allowed: ${params.toolCall?.title ?? "unknown"} → ${optionId}`);
+          resolvePromise({ outcome: { outcome: "selected", optionId } });
+        }
+      }, timeoutSec * 1000);
+
+      callback!({
+        options: params.options,
+        toolCall: params.toolCall,
+        resolve: (optionId: string) => {
+          if (resolved) return;
+          cleanup();
+          this.opts.log(`[permission] user selected: ${params.toolCall?.title ?? "unknown"} → ${optionId}`);
+          resolvePromise({ outcome: { outcome: "selected", optionId } });
+        },
+        reject: () => {
+          if (resolved) return;
+          cleanup();
+          this.opts.log(`[permission] user denied: ${params.toolCall?.title ?? "unknown"}`);
+          resolvePromise({ outcome: { outcome: "cancelled" } });
+        },
+      });
+    });
   }
 
   async sessionUpdate(params: acp.SessionNotification): Promise<void> {

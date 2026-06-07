@@ -66,6 +66,14 @@ export interface SessionManagerOpts {
   log: (msg: string) => void;
   onReply: (userId: string, contextToken: string, text: string) => Promise<void>;
   sendTyping: (userId: string, contextToken: string) => Promise<void>;
+  onPermissionRequest?: (userId: string, params: {
+    options: acp.PermissionOption[];
+    toolCall: acp.ToolCallUpdate;
+    resolve: (optionId: string) => void;
+    reject: () => void;
+  }) => void;
+  permissionTimeoutSec?: number;
+  permissionTimeoutAction?: "allow" | "deny";
 }
 
 export class SessionManager {
@@ -234,6 +242,11 @@ export class SessionManager {
       log: (msg) => this.opts.log(`[${userId}] ${msg}`),
       showThoughts: this.opts.showThoughts,
       showDiffs: this.opts.showDiffs ?? false,
+      onPermissionRequest: this.opts.onPermissionRequest
+        ? (params) => this.opts.onPermissionRequest!(userId, params)
+        : undefined,
+      permissionTimeoutSec: this.opts.permissionTimeoutSec,
+      permissionTimeoutAction: this.opts.permissionTimeoutAction,
     });
 
     const agentInfo = await spawnAgent({

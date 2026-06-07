@@ -27,3 +27,7 @@ Thumbs.db
 *.ntvs*
 *.njsproj
 *.sln
+
+# Test scripts (may contain local paths/IDs)
+test_*.mjs
+test_*.js

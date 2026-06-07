@@ -1,15 +1,17 @@
 {
-  "name": "wechat-acp",
-  "version": "0.8.0-patched",
-  "description": "Bridge WeChat to any ACP-compatible AI agent",
+  "name": "hermes-wechat-acp",
+  "version": "0.9.0",
+  "description": "WeChat message bridge for Hermes Agent — full media, interactive approvals, protocol-aligned with openclaw-weixin",
   "type": "module",
   "files": [
     "dist/",
     "README.md",
+    "README_EN.md",
     "package.json"
   ],
   "bin": {
-    "wechat-acp": "./dist/bin/wechat-acp.js"
+    "wechat-acp": "./dist/bin/wechat-acp.js",
+    "hermes-wechat-acp": "./dist/bin/wechat-acp.js"
   },
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
@@ -42,11 +44,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/formulahendry/wechat-acp.git"
+    "url": "git+https://github.com/YrracOwl/hermes-wechat-acp.git"
   },
-  "homepage": "https://github.com/formulahendry/wechat-acp#readme",
+  "homepage": "https://github.com/YrracOwl/hermes-wechat-acp#readme",
   "bugs": {
-    "url": "https://github.com/formulahendry/wechat-acp/issues"
+    "url": "https://github.com/YrracOwl/hermes-wechat-acp/issues"
   },
   "license": "MIT",
   "keywords": [
@@ -54,6 +56,7 @@
     "acp",
     "agent-client-protocol",
     "ai-agent",
+    "hermes",
     "bridge"
   ]
 }

@@ -193,7 +193,7 @@ hermes-wechat-acp status          查看守护进程状态
 回复数字选择，300秒后自动允许。
 ```
 
-编辑审批仅有两个选项（`allow_once` / `deny`）。默认策略为 `"ask"`（总是询问）；可通过 ACP 会话配置更改（`/acp-config set edit_approval_policy accept_edits`）。
+编辑审批仅有两个选项（`allow_once` / `deny`）。**默认策略为自动允许**（`accept_edits`），新 session 无需手动审批文件修改。如需恢复手动审批，可发送 `/acp-config set edit_approval_policy ask`。
 
 ## 媒体支持（相对上游的补丁）
 
@@ -345,17 +345,73 @@ npx tsx bin/wechat-acp.ts stop
 ## 版本历史
 
 ```
-53cd9ff docs: rewrite README (zh-CN default, en → README_EN.md)
+80553c1 chore: remove accidentally tracked unrelated files
+df5abb8 feat: auto-set edit_approval_policy to accept_edits for new sessions
+88c7c11 chore: move debug scripts to debug/, update .gitignore
+de0d2c8 docs: 中文 README（默认），英文移至 README_EN.md
+53cd9ff docs: rewrite README for hermes-wechat-acp fork
 172d41d chore: remove test scripts with hardcoded local IDs
 c2f77c6 fix: revert misleading session-expired flag
 7bbd292 feat: edit approval with diff display
-cd8b8bf fix: #14 --daemon spawn compiled JS + #15 contextToken
+cd8b8bf fix: --daemon spawn compiled JS + contextToken in permission messages
 2214ccc feat: interactive permission approval over WeChat
 c0d0428 fix: P0-P2 openclaw-weixin v2.4.4 alignment
 8889461 v0.8.0（上游）
 ```
 
-基础：`formulahendry/wechat-acp` v0.8.0，叠加 7 个本地 commit，增加媒体支持、审批和协议对齐。
+基础：`formulahendry/wechat-acp` v0.8.0，叠加 12 个本地 commit，增加媒体支持、审批、协议对齐、systemd 部署和自动配置。
+
+## Systemd 部署（推荐生产环境）
+
+```bash
+# 1. 安装 service 文件
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/wechat-acp.service << 'EOF'
+[Unit]
+Description=wechat-acp — WeChat ACP bridge for Hermes Agent
+After=network-online.target
+Wants=network-online.target
+
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=%h/hermes-wechat-acp
+Environment=HOME=%h
+Environment=PATH=%h/.local/node22/bin:/usr/local/bin:/usr/bin:/bin
+Environment=WECHAT_ACP_TELEMETRY=0
+ExecStart=%h/.local/node22/bin/node \
+    %h/hermes-wechat-acp/dist/bin/wechat-acp.js \
+    --agent "hermes acp" \
+    --hide-thoughts \
+    --config %h/.wechat-acp/config.json \
+    --permission-timeout 300
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF
+
+# 2. 启用用户常驻（确保 SSH 登出后服务不停止）
+sudo loginctl enable-linger $USER
+
+# 3. 加载并启动
+systemctl --user daemon-reload
+systemctl --user enable --now wechat-acp
+```
+
+**日常管理：**
+```bash
+systemctl --user status wechat-acp            # 状态
+journalctl --user -u wechat-acp -f            # 实时日志
+systemctl --user restart wechat-acp           # 重启
+```
+
+**Systemd vs `--daemon`：** 使用 systemd 时无需 `--daemon` 标志。systemd 直接管理前台进程，处理日志（journald）、崩溃重启和生命周期。`--daemon` 仅在手动后台运行时使用。
 
 ## 待办 / 已知限制
 

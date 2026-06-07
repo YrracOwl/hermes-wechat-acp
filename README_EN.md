@@ -191,7 +191,7 @@ File mutations (`write_file`, `patch`) also trigger approval. The bridge shows:
 回复数字选择，300秒后自动允许。
 ```
 
-Edit approval has only 2 options (`allow_once` / `deny`). Default policy is `"ask"` (always prompts); can be changed via ACP session config (`/acp-config set edit_approval_policy accept_edits`).
+Edit approval has only 2 options (`allow_once` / `deny`). **Default policy is auto-accept** (`accept_edits`), so new sessions skip file-mutation approval. To restore manual approval, send `/acp-config set edit_approval_policy ask`.
 
 ## Media Support (Patched vs Upstream)
 
@@ -343,16 +343,73 @@ Always compile before `--daemon` — the daemon spawns child processes from comp
 ## Version History
 
 ```
+80553c1 chore: remove accidentally tracked unrelated files
+df5abb8 feat: auto-set edit_approval_policy to accept_edits for new sessions
+88c7c11 chore: move debug scripts to debug/, update .gitignore
+de0d2c8 docs: Chinese README (default), English → README_EN.md
+53cd9ff docs: rewrite README for hermes-wechat-acp fork
 172d41d chore: remove test scripts with hardcoded local IDs
 c2f77c6 fix: revert misleading session-expired flag
 7bbd292 feat: edit approval with diff display
-cd8b8bf fix: #14 --daemon spawn compiled JS + #15 contextToken
+cd8b8bf fix: --daemon spawn compiled JS + contextToken in permission messages
 2214ccc feat: interactive permission approval over WeChat
 c0d0428 fix: P0-P2 openclaw-weixin v2.4.4 alignment
 8889461 v0.8.0 (upstream)
 ```
 
-Base: `formulahendry/wechat-acp` v0.8.0 with 6 local commits adding media support, approval, and protocol alignment.
+Base: `formulahendry/wechat-acp` v0.8.0 with 12 local commits adding media support, approval, protocol alignment, systemd deployment, and auto-configuration.
+
+## Systemd Deployment (Recommended for Production)
+
+```bash
+# 1. Install service file
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/wechat-acp.service << 'EOF'
+[Unit]
+Description=wechat-acp — WeChat ACP bridge for Hermes Agent
+After=network-online.target
+Wants=network-online.target
+
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=%h/hermes-wechat-acp
+Environment=HOME=%h
+Environment=PATH=%h/.local/node22/bin:/usr/local/bin:/usr/bin:/bin
+Environment=WECHAT_ACP_TELEMETRY=0
+ExecStart=%h/.local/node22/bin/node \
+    %h/hermes-wechat-acp/dist/bin/wechat-acp.js \
+    --agent "hermes acp" \
+    --hide-thoughts \
+    --config %h/.wechat-acp/config.json \
+    --permission-timeout 300
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF
+
+# 2. Enable user lingering (service survives SSH logout)
+sudo loginctl enable-linger $USER
+
+# 3. Reload and start
+systemctl --user daemon-reload
+systemctl --user enable --now wechat-acp
+```
+
+**Day-to-day management:**
+```bash
+systemctl --user status wechat-acp            # Status
+journalctl --user -u wechat-acp -f            # Live logs
+systemctl --user restart wechat-acp           # Restart
+```
+
+**Systemd vs `--daemon`:** Omit `--daemon` when using systemd. systemd manages the foreground process directly, handling logging (journald), crash restart, and lifecycle. `--daemon` is only for manual background execution.
 
 ## TODO / Known Limitations
 

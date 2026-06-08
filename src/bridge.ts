@@ -457,8 +457,14 @@ export class WeChatAcpBridge {
           this.clearPermissionTimer(active);
           queue.shift();
           active.reject();
-          // Auto-reject all queued items as well — user explicitly cancelled
-          this.autoResolveQueue(queue, "reject_always");
+          // Reject ALL queued items unconditionally — user explicitly cancelled
+          // the whole operation. Unlike reject_always which only propagates to
+          // items with that option kind, cancel means "stop everything."
+          for (const item of queue) {
+            this.clearPermissionTimer(item);
+            item.reject();
+          }
+          queue.length = 0;
           this.pendingPermissions.delete(userId);
           return;
         }

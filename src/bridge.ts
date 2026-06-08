@@ -75,14 +75,17 @@ export class WeChatAcpBridge {
   // messages arriving during the flush wait for the buffered prompt to
   // enqueue first, preserving turn order.
   private bufferFlushing = new Map<string, Promise<void>>();
-  // Per-user pending permission request — resolve/reject callbacks keyed by userId.
-  // Only one permission request can be pending per user at a time.
-  private pendingPermissions = new Map<string, {
+  // Per-user permission request queue — oldest-first, one-at-a-time.
+  // When multiple permission requests arrive concurrently (e.g. command guard +
+  // edit guard on the same tool call), they queue up instead of overwriting.
+  // Each item carries its own resolve/reject so the agent can continue
+  // independently after the user works through the queue.
+  private pendingPermissions = new Map<string, Array<{
     resolve: (optionId: string) => void;
     reject: () => void;
-    timeout: ReturnType<typeof setTimeout>;
+    timeout: ReturnType<typeof setTimeout> | null;
     options: acp.PermissionOption[];
-  }>();
+  }>>();
   // Per-user last known contextToken (in-memory, synced from handleMessage).
   // Used by handlePermissionRequest so permission options carry the right
   // contextToken instead of hardcoding an empty string.
@@ -246,13 +249,31 @@ export class WeChatAcpBridge {
 
     const text = lines.join("\n");
 
-    // Store pending
-    this.pendingPermissions.set(userId, {
+    // Build the pending entry (timer starts when item becomes active)
+    const entry = {
       resolve: params.resolve,
       reject: params.reject,
       options: params.options,
-      timeout: setTimeout(() => {}, 0), // placeholder; actual timeout is in client.ts
-    });
+      timeout: null as ReturnType<typeof setTimeout> | null,
+    };
+
+    const queue = this.pendingPermissions.get(userId);
+    if (queue && queue.length > 0) {
+      // Queue is already processing — enqueue and let the user work through
+      // items one at a time.
+      queue.push(entry);
+      this.log(
+        `[${userId}] Permission request queued (depth=${queue.length}), ` +
+          `active: "${queue[0].options[0]?.optionId ?? "?"}", ` +
+          `queued: "${entry.options[0]?.optionId ?? "?"}"`,
+      );
+      return;
+    }
+
+    // First item for this user — activate immediately.
+    const newQueue = [entry];
+    this.pendingPermissions.set(userId, newQueue);
+    this.startPermissionTimer(userId, entry);
 
     // Send to WeChat — use sendReply which bypasses processQueue.
     // Use the last known contextToken from the user's message to keep
@@ -264,6 +285,109 @@ export class WeChatAcpBridge {
     this.sendReply(userId, contextToken, text).catch((err) => {
       this.log(`Failed to send permission prompt to ${userId}: ${String(err)}`);
     });
+  }
+
+  /** Start the bridge-side timeout for the active permission item.
+   *  Defense-in-depth: the primary timeout lives in client.ts, but this
+   *  catches orphans and races. */
+  private startPermissionTimer(
+    userId: string,
+    entry: NonNullable<ReturnType<typeof this.pendingPermissions.get>>[number],
+  ): void {
+    const timeoutMs = this.config.permission.timeoutSec * 1000;
+    const timer = setTimeout(() => {
+      const queue = this.pendingPermissions.get(userId);
+      if (!queue || queue[0] !== entry) return; // already resolved
+
+      this.log(`[${userId}] Permission request timed out on bridge side — auto-cleaning up`);
+      if (this.config.permission.timeoutAction === "deny") {
+        entry.reject();
+      } else {
+        const allowOpt = entry.options.find(
+          (o) => o.kind === "allow_once" || o.kind === "allow_always",
+        );
+        entry.resolve(allowOpt?.optionId ?? entry.options[0]?.optionId ?? "allow_once");
+      }
+      queue.shift(); // remove active
+      this.dequeueNext(userId, queue);
+    }, timeoutMs);
+    timer.unref();
+    entry.timeout = timer;
+  }
+
+  /** Move to the next queued permission item for this user, if any. */
+  private dequeueNext(
+    userId: string,
+    queue: Array<{
+      resolve: (optionId: string) => void;
+      reject: () => void;
+      timeout: ReturnType<typeof setTimeout> | null;
+      options: acp.PermissionOption[];
+    }>,
+  ): void {
+    if (queue.length === 0) {
+      this.pendingPermissions.delete(userId);
+      return;
+    }
+    const next = queue[0];
+    this.startPermissionTimer(userId, next);
+
+    // Build and send the next permission message
+    const lines: string[] = [];
+    lines.push(`🔐 Hermes 需要权限 (队列剩余 ${queue.length - 1})`);
+    lines.push("");
+    const indexLabels: Record<number, string> = {};
+    let idx = 1;
+    for (const opt of next.options) {
+      const kindLabel =
+        opt.kind === "allow_once" ? "允许一次" :
+        opt.kind === "allow_always" ? "总是允许" :
+        opt.kind === "reject_once" ? "拒绝" :
+        opt.kind === "reject_always" ? "永不" : opt.kind;
+      lines.push(`[${idx}] ${kindLabel}`);
+      indexLabels[idx] = opt.optionId;
+      idx++;
+    }
+    lines.push("");
+    lines.push(`回复数字选择，${this.config.permission.timeoutSec}秒后自动${this.config.permission.timeoutAction === "deny" ? "拒绝" : "允许"}。`);
+
+    const text = lines.join("\n");
+    const contextToken = this.lastContextToken.get(userId) ?? "";
+    this.sendReply(userId, contextToken, text).catch((err) => {
+      this.log(`Failed to send queued permission prompt to ${userId}: ${String(err)}`);
+    });
+  }
+
+  /** Clear the timeout on a permission item. Safe to call when timer is null. */
+  private clearPermissionTimer(entry: {
+    timeout: ReturnType<typeof setTimeout> | null;
+  }): void {
+    if (entry.timeout !== null) {
+      clearTimeout(entry.timeout);
+      entry.timeout = null;
+    }
+  }
+
+  /** Apply an "always" decision to all queued items that support it.
+   *  Items without the matching option kind stay in the queue for the user. */
+  private autoResolveQueue(
+    queue: Array<{
+      resolve: (optionId: string) => void;
+      reject: () => void;
+      timeout: ReturnType<typeof setTimeout> | null;
+      options: acp.PermissionOption[];
+    }>,
+    kind: "allow_always" | "reject_always",
+  ): void {
+    for (let i = queue.length - 1; i >= 0; i--) {
+      const item = queue[i];
+      const match = item.options.find((o) => o.kind === kind);
+      if (match) {
+        this.clearPermissionTimer(item);
+        item.resolve(match.optionId);
+        queue.splice(i, 1);
+      }
+    }
   }
 
   /** Extract diff content from a tool call for edit approval display. */
@@ -309,52 +433,81 @@ export class WeChatAcpBridge {
     // ⚡ Permission reply intercept — MUST run before any command/message routing.
     // The agent is blocked in requestPermission() waiting for this reply.
     // Bypassing processQueue prevents deadlock (same pattern as Hermes gateway base.py:1582).
-    const pending = this.pendingPermissions.get(userId);
-    if (pending) {
+    const queue = this.pendingPermissions.get(userId);
+    if (queue && queue.length > 0) {
+      const active = queue[0];
       const replyText = this.extractTextFromMessage(msg);
       if (replyText) {
         const trimmed = replyText.trim();
+        const lower = trimmed.toLowerCase();
+        let resolvedOptionId: string | null = null;
+        let resolvedKind: string | null = null;
+
         // Try numeric index match
         const num = parseInt(trimmed, 10);
-        if (num >= 1 && num <= pending.options.length) {
-          const optionId = pending.options[num - 1].optionId;
-          this.log(`[${userId}] permission resolved by index: ${num} → ${optionId}`);
-          this.pendingPermissions.delete(userId);
-          pending.resolve(optionId);
-          return;
+        if (num >= 1 && num <= active.options.length) {
+          const opt = active.options[num - 1];
+          resolvedOptionId = opt.optionId;
+          resolvedKind = opt.kind;
+          this.log(`[${userId}] permission resolved by index: ${num} → ${resolvedOptionId}`);
         }
-        // Try text match: /approve, allow, 允许, /deny, 拒绝, /acp-cancel, 中止
-        const lower = trimmed.toLowerCase();
-        const isCancel = lower === "/acp-cancel" || lower === "中止" || lower === "/中止";
-        if (isCancel) {
+        // Try text match: /acp-cancel, 中止 → reject
+        else if (lower === "/acp-cancel" || lower === "中止" || lower === "/中止") {
           this.log(`[${userId}] permission cancelled by command`);
+          this.clearPermissionTimer(active);
+          queue.shift();
+          active.reject();
+          // Auto-reject all queued items as well — user explicitly cancelled
+          this.autoResolveQueue(queue, "reject_always");
           this.pendingPermissions.delete(userId);
-          pending.reject();
           return;
         }
-        if (lower === "/approve" || lower === "允许" || lower === "approve" || lower === "yes") {
-          // Find first allow option
-          const allowOpt = pending.options.find(o => o.kind === "allow_once" || o.kind === "allow_always");
+        // /approve, 允许, yes → first allow option
+        else if (lower === "/approve" || lower === "允许" || lower === "approve" || lower === "yes") {
+          const allowOpt = active.options.find(o => o.kind === "allow_once" || o.kind === "allow_always");
           if (allowOpt) {
-            this.log(`[${userId}] permission resolved by text: "${trimmed}" → ${allowOpt.optionId}`);
-            this.pendingPermissions.delete(userId);
-            pending.resolve(allowOpt.optionId);
-            return;
+            resolvedOptionId = allowOpt.optionId;
+            resolvedKind = allowOpt.kind;
+            this.log(`[${userId}] permission resolved by text: "${trimmed}" → ${resolvedOptionId}`);
           }
         }
-        if (lower === "/approve-always" || lower === "总是允许" || lower === "always") {
-          const opt = pending.options.find(o => o.kind === "allow_always");
+        // /approve-always, 总是允许, always → allow_always
+        else if (lower === "/approve-always" || lower === "总是允许" || lower === "always") {
+          const opt = active.options.find(o => o.kind === "allow_always");
           if (opt) {
-            this.log(`[${userId}] permission resolved by text: "${trimmed}" → ${opt.optionId}`);
-            this.pendingPermissions.delete(userId);
-            pending.resolve(opt.optionId);
-            return;
+            resolvedOptionId = opt.optionId;
+            resolvedKind = "allow_always";
+            this.log(`[${userId}] permission resolved by text: "${trimmed}" → ${resolvedOptionId}`);
           }
         }
-        if (lower === "/deny" || lower === "拒绝" || lower === "deny" || lower === "no") {
+        // /deny, 拒绝, no → reject_once
+        else if (lower === "/deny" || lower === "拒绝" || lower === "deny" || lower === "no") {
           this.log(`[${userId}] permission denied by text: "${trimmed}"`);
-          this.pendingPermissions.delete(userId);
-          pending.reject();
+          this.clearPermissionTimer(active);
+          queue.shift();
+          active.reject();
+          this.dequeueNext(userId, queue);
+          return;
+        }
+
+        if (resolvedOptionId !== null) {
+          // Resolve the active item
+          this.clearPermissionTimer(active);
+          queue.shift(); // remove active from front
+
+          if (resolvedKind === "allow_always") {
+            // Propagate allow_always to queued items that have that option
+            this.autoResolveQueue(queue, "allow_always");
+            // active already resolved above at line ~435
+          } else if (resolvedKind === "reject_always") {
+            // Propagate reject_always to queued items that have that option
+            this.autoResolveQueue(queue, "reject_always");
+          } else {
+            // allow_once or reject_once — no propagation
+            // active already resolved at line ~435 (via resolve call below)
+          }
+          active.resolve(resolvedOptionId);
+          this.dequeueNext(userId, queue);
           return;
         }
       }
